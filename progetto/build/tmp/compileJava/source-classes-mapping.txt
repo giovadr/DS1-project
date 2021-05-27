@@ -1,0 +1,14 @@
+it/unitn/ds1/TwoPhaseCommit.java
+ it.unitn.ds1.TwoPhaseCommit
+ it.unitn.ds1.TwoPhaseCommit$Coordinator
+ it.unitn.ds1.TwoPhaseCommit$Decision
+ it.unitn.ds1.TwoPhaseCommit$DecisionRequest
+ it.unitn.ds1.TwoPhaseCommit$DecisionResponse
+ it.unitn.ds1.TwoPhaseCommit$Node
+ it.unitn.ds1.TwoPhaseCommit$Participant
+ it.unitn.ds1.TwoPhaseCommit$Recovery
+ it.unitn.ds1.TwoPhaseCommit$StartMessage
+ it.unitn.ds1.TwoPhaseCommit$Timeout
+ it.unitn.ds1.TwoPhaseCommit$Vote
+ it.unitn.ds1.TwoPhaseCommit$VoteRequest
+ it.unitn.ds1.TwoPhaseCommit$VoteResponse
