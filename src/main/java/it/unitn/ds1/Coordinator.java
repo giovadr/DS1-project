@@ -11,6 +11,7 @@ import java.util.Random;
 public class Coordinator extends AbstractActor{
 
     private final Integer coordinatorId;
+    private List<ActorRef> servers;
 
     public Coordinator(int coordinatorId) {
         this.coordinatorId = coordinatorId;
@@ -27,8 +28,15 @@ public class Coordinator extends AbstractActor{
         }
     }
 
+    private void onWelcomeMsg(WelcomeMsg msg) {
+        this.servers = msg.servers;
+        System.out.println(servers);
+    }
+
     @Override
     public Receive createReceive() {
-        return null;
+        return receiveBuilder()
+                .match(WelcomeMsg.class,  this::onWelcomeMsg)
+                .build();
     }
 }

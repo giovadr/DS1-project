@@ -23,6 +23,7 @@ public class Server extends AbstractActor {
 
     @Override
     public AbstractActor.Receive createReceive() {
-        return null;
+        return receiveBuilder()
+                .build();
     }
 }
