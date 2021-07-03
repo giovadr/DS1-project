@@ -11,9 +11,9 @@ import java.io.IOException;
 public class Main {
   final static int N_CLIENTS = 3;
   final static int N_COORDINATORS = 5;
-  final static int MAX_KEY = 100;
+  final static int N_SERVERS = 10;
   final static int N_KEYS_PER_SERVER = 10;
-  final static int N_SERVERS = MAX_KEY / N_KEYS_PER_SERVER;
+  final static int MAX_KEY = N_SERVERS * N_KEYS_PER_SERVER - 1;
 
 
   /*-- Main ------------------------------------------------------------------*/
