@@ -45,7 +45,7 @@ public class Main {
     }
 
     // Send start messages to the coordinators to inform them of the serversGroup
-    Coordinator.WelcomeMsg coordinatorWelcomeMsg = new Coordinator.WelcomeMsg(coordinatorsGroup);
+    Coordinator.WelcomeMsg coordinatorWelcomeMsg = new Coordinator.WelcomeMsg(serversGroup);
     for (ActorRef coordinator: coordinatorsGroup) {
       coordinator.tell(coordinatorWelcomeMsg, null);
     }
