@@ -151,21 +151,31 @@ public class Coordinator extends AbstractActor{
         } else {
             currentClient.tell(new Client.TxnResultMsg(false), getSelf());
             sendDecisionToAllContactedServers(currentClient, Decision.ABORT);
+            ongoingTransactions.remove(currentClient);
         }
+
+        System.out.println("COORDINATOR " + coordinatorId + " END");
     }
 
     private void onVoteResponseMsg(VoteResponse msg) {
         TransactionInfo currentTransactionInfo = ongoingTransactions.get(msg.client);
-        if (msg.vote == Vote.YES) {
-            currentTransactionInfo.nYesVotes++;
 
-            if (currentTransactionInfo.nYesVotes == currentTransactionInfo.servers.size()) {
-                msg.client.tell(new Client.TxnResultMsg(true), getSelf());
-                sendDecisionToAllContactedServers(msg.client, Decision.COMMIT);
+        if (currentTransactionInfo != null) {
+            if (msg.vote == Vote.YES) {
+                currentTransactionInfo.nYesVotes++;
+
+                if (currentTransactionInfo.nYesVotes == currentTransactionInfo.servers.size()) {
+                    msg.client.tell(new Client.TxnResultMsg(true), getSelf());
+                    sendDecisionToAllContactedServers(msg.client, Decision.COMMIT);
+                    System.out.println("COORDINATOR " + coordinatorId + " COMMIT OK");
+                    ongoingTransactions.remove(msg.client);
+                }
+            } else {
+                msg.client.tell(new Client.TxnResultMsg(false), getSelf());
+                sendDecisionToAllContactedServers(msg.client, Decision.ABORT);
+                System.out.println("COORDINATOR " + coordinatorId + " COMMIT FAIL");
+                ongoingTransactions.remove(msg.client);
             }
-        } else {
-            msg.client.tell(new Client.TxnResultMsg(false), getSelf());
-            sendDecisionToAllContactedServers(msg.client, Decision.ABORT);
         }
     }
 

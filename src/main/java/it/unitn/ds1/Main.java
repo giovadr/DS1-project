@@ -55,6 +55,25 @@ public class Main {
       System.in.read();
     } 
     catch (IOException ignored) {}
+
+/*
+    Client.StopMsg stopMsg = new Client.StopMsg();
+    for (ActorRef server: clientsGroup) {
+      server.tell(stopMsg, null);
+    }
+*/
+
+    Server.LogRequestMsg logRequestMsg = new Server.LogRequestMsg();
+    for (ActorRef server: serversGroup) {
+      server.tell(logRequestMsg, null);
+    }
+
+    try {
+      System.out.println(">>> Press ENTER to exit <<<");
+      System.in.read();
+    }
+    catch (IOException ignored) {}
+
     system.terminate();
   }
 }
