@@ -5,16 +5,13 @@ import akka.actor.*;
 import java.io.Serializable;
 import java.util.*;
 
-public class Coordinator extends AbstractActor{
-
-    private final Integer coordinatorId;
+public class Coordinator extends Node {
     private Integer transactionsCounter;
-    private List<ActorRef> servers;
     private final Map<String, TransactionInfo> ongoingTransactions = new HashMap<>();
     private final Map<ActorRef, String> transactionIdForClients = new HashMap<>();
 
     public Coordinator(int coordinatorId) {
-        this.coordinatorId = coordinatorId;
+        super(coordinatorId);
         this.transactionsCounter = 0;
     }
 
@@ -33,80 +30,6 @@ public class Coordinator extends AbstractActor{
         }
     }
 
-    public static class WelcomeMsg implements Serializable {
-        public final List<ActorRef> servers;
-        public WelcomeMsg(List<ActorRef> servers) {
-            this.servers = Collections.unmodifiableList(new ArrayList<>(servers));
-        }
-    }
-
-    // READ request from the coordinator to the server
-    public static class ReadMsg implements Serializable {
-        public final String transactionId;
-        public final Integer key; // the key of the value to read
-        public ReadMsg(String transactionId, int key) {
-            this.transactionId = transactionId;
-            this.key = key;
-        }
-    }
-
-    // reply from the server when requested a READ on a given key
-    public static class ReadResultMsg implements Serializable {
-        public final String transactionId;
-        public final Integer key; // the key associated to the requested item
-        public final Integer value; // the value found in the data store for that item
-        public ReadResultMsg(String transactionId, int key, int value) {
-            this.transactionId = transactionId;
-            this.key = key;
-            this.value = value;
-        }
-    }
-
-    // WRITE request from the coordinator to the server
-    public static class WriteMsg implements Serializable {
-        public final String transactionId;
-        public final Integer key; // the key of the value to write
-        public final Integer value; // the new value to write
-        public WriteMsg(String transactionId, int key, int value) {
-            this.transactionId = transactionId;
-            this.key = key;
-            this.value = value;
-        }
-    }
-
-    public enum Vote {NO, YES}
-    public enum Decision {ABORT, COMMIT}
-
-    public static class VoteRequest implements Serializable {
-        public final String transactionId;
-        public VoteRequest(String transactionId) {
-            this.transactionId = transactionId;
-        }
-    }
-
-    public static class VoteResponse implements Serializable {
-        public final String transactionId;
-        public final Vote vote;
-        public VoteResponse(String transactionId, Vote v) {
-            this.transactionId = transactionId;
-            vote = v;
-        }
-    }
-
-    public static class DecisionMsg implements Serializable {
-        public final String transactionId;
-        public final Decision decision;
-        public DecisionMsg(String transactionId, Decision d) {
-            this.transactionId = transactionId;
-            decision = d;
-        }
-    }
-
-    private void onWelcomeMsg(WelcomeMsg msg) {
-        this.servers = msg.servers;
-        System.out.println(servers);
-    }
-
     private void onTxnBeginMsg(Client.TxnBeginMsg msg) {
         ActorRef currentClient = getSender();
         currentClient.tell(new Client.TxnAcceptMsg(), getSelf());
@@ -114,7 +37,7 @@ public class Coordinator extends AbstractActor{
     }
 
     private void initializeTransaction(ActorRef client) {
-        String transactionId = coordinatorId + "." + transactionsCounter;
+        String transactionId = id + "." + transactionsCounter;
         ongoingTransactions.put(transactionId, new TransactionInfo(client));
         transactionIdForClients.put(client, transactionId);
         transactionsCounter++;
@@ -136,7 +59,7 @@ public class Coordinator extends AbstractActor{
         ActorRef currentClient = ongoingTransactions.get(msg.transactionId).client;
         currentClient.tell(new Client.ReadResultMsg(msg.key, msg.value), getSelf());
 
-        System.out.println("COORDINATOR " + coordinatorId + " SEND READ RESULT (" + msg.key + ", " + msg.value + ") TO " + currentClient.path().name());
+        System.out.println("COORDINATOR " + id + " SEND READ RESULT (" + msg.key + ", " + msg.value + ") TO " + currentClient.path().name());
     }
 
     private void onWriteMsg(Client.WriteMsg msg) {
@@ -147,7 +70,7 @@ public class Coordinator extends AbstractActor{
         currentServer.tell(new WriteMsg(transactionId, msg.key, msg.value), getSelf());
         addContactedServer(transactionId, currentServer);
 
-        System.out.println("COORDINATOR " + coordinatorId + " WRITE (" + msg.key + ", " + msg.value + ")");
+        System.out.println("COORDINATOR " + id + " WRITE (" + msg.key + ", " + msg.value + ")");
     }
 
     private void onTxnEndMsg(Client.TxnEndMsg msg) {
@@ -165,7 +88,7 @@ public class Coordinator extends AbstractActor{
             ongoingTransactions.remove(transactionId);
         }
 
-        System.out.println("COORDINATOR " + coordinatorId + " END");
+        System.out.println("COORDINATOR " + id + " END");
     }
 
     private void onVoteResponseMsg(VoteResponse msg) {
@@ -178,13 +101,13 @@ public class Coordinator extends AbstractActor{
                 if (currentTransactionInfo.nYesVotes == currentTransactionInfo.contactedServers.size()) {
                     currentTransactionInfo.client.tell(new Client.TxnResultMsg(true), getSelf());
                     sendDecisionToAllContactedServers(msg.transactionId, Decision.COMMIT);
-                    System.out.println("COORDINATOR " + coordinatorId + " COMMIT OK");
+                    System.out.println("COORDINATOR " + id + " COMMIT OK");
                     ongoingTransactions.remove(msg.transactionId);
                 }
             } else {
                 currentTransactionInfo.client.tell(new Client.TxnResultMsg(false), getSelf());
                 sendDecisionToAllContactedServers(msg.transactionId, Decision.ABORT);
-                System.out.println("COORDINATOR " + coordinatorId + " COMMIT FAIL");
+                System.out.println("COORDINATOR " + id + " COMMIT FAIL");
                 ongoingTransactions.remove(msg.transactionId);
             }
         }
@@ -193,7 +116,7 @@ public class Coordinator extends AbstractActor{
     private void sendDecisionToAllContactedServers(String transactionId, Decision decision) {
         TransactionInfo currentTransactionInfo = ongoingTransactions.get(transactionId);
         for(ActorRef server : currentTransactionInfo.contactedServers) {
-            server.tell(new DecisionMsg(transactionId, decision), getSelf());
+            server.tell(new DecisionResponse(transactionId, decision), getSelf());
         }
     }
 
@@ -205,13 +128,13 @@ public class Coordinator extends AbstractActor{
     @Override
     public Receive createReceive() {
         return receiveBuilder()
-                .match(WelcomeMsg.class,  this::onWelcomeMsg)
-                .match(Client.TxnBeginMsg.class,  this::onTxnBeginMsg)
-                .match(Client.ReadMsg.class,  this::onReadMsg)
-                .match(ReadResultMsg.class,  this::onReadResultMsg)
-                .match(Client.WriteMsg.class,  this::onWriteMsg)
-                .match(Client.TxnEndMsg.class,  this::onTxnEndMsg)
-                .match(VoteResponse.class,  this::onVoteResponseMsg)
+                .match(WelcomeMsg.class, this::onWelcomeMsg)
+                .match(Client.TxnBeginMsg.class, this::onTxnBeginMsg)
+                .match(Client.ReadMsg.class, this::onReadMsg)
+                .match(ReadResultMsg.class, this::onReadResultMsg)
+                .match(Client.WriteMsg.class, this::onWriteMsg)
+                .match(Client.TxnEndMsg.class, this::onTxnEndMsg)
+                .match(VoteResponse.class, this::onVoteResponseMsg)
                 .build();
     }
 }

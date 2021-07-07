@@ -50,6 +50,10 @@ public class Main {
       coordinator.tell(coordinatorWelcomeMsg, null);
     }
 
+    for (ActorRef server: serversGroup) {
+      server.tell(coordinatorWelcomeMsg, null);
+    }
+
     try {
       System.out.println(">>> Press ENTER to exit <<<");
       System.in.read();
