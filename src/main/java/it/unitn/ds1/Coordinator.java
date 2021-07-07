@@ -8,11 +8,14 @@ import java.util.*;
 public class Coordinator extends AbstractActor{
 
     private final Integer coordinatorId;
+    private Integer transactionsCounter;
     private List<ActorRef> servers;
-    private final Map<ActorRef, TransactionInfo> ongoingTransactions = new HashMap<>();
+    private final Map<String, TransactionInfo> ongoingTransactions = new HashMap<>();
+    private final Map<ActorRef, String> transactionIdForClients = new HashMap<>();
 
     public Coordinator(int coordinatorId) {
         this.coordinatorId = coordinatorId;
+        this.transactionsCounter = 0;
     }
 
     static public Props props(int coordinatorId) {
@@ -20,10 +23,12 @@ public class Coordinator extends AbstractActor{
     }
 
     public static class TransactionInfo implements Serializable {
-        public final Set<ActorRef> servers;
+        public final ActorRef client;
+        public final Set<ActorRef> contactedServers;
         public Integer nYesVotes;
-        public TransactionInfo() {
-            this.servers = new HashSet<>();
+        public TransactionInfo(ActorRef client) {
+            this.client = client;
+            this.contactedServers = new HashSet<>();
             this.nYesVotes = 0;
         }
     }
@@ -37,21 +42,21 @@ public class Coordinator extends AbstractActor{
 
     // READ request from the coordinator to the server
     public static class ReadMsg implements Serializable {
-        public final ActorRef client;
+        public final String transactionId;
         public final Integer key; // the key of the value to read
-        public ReadMsg(ActorRef client, int key) {
-            this.client = client;
+        public ReadMsg(String transactionId, int key) {
+            this.transactionId = transactionId;
             this.key = key;
         }
     }
 
     // reply from the server when requested a READ on a given key
     public static class ReadResultMsg implements Serializable {
-        public final ActorRef client; // the client to which forward the result
+        public final String transactionId;
         public final Integer key; // the key associated to the requested item
         public final Integer value; // the value found in the data store for that item
-        public ReadResultMsg(ActorRef client, int key, int value) {
-            this.client = client;
+        public ReadResultMsg(String transactionId, int key, int value) {
+            this.transactionId = transactionId;
             this.key = key;
             this.value = value;
         }
@@ -59,11 +64,11 @@ public class Coordinator extends AbstractActor{
 
     // WRITE request from the coordinator to the server
     public static class WriteMsg implements Serializable {
-        public final ActorRef client;
+        public final String transactionId;
         public final Integer key; // the key of the value to write
         public final Integer value; // the new value to write
-        public WriteMsg(ActorRef client, int key, int value) {
-            this.client = client;
+        public WriteMsg(String transactionId, int key, int value) {
+            this.transactionId = transactionId;
             this.key = key;
             this.value = value;
         }
@@ -73,26 +78,26 @@ public class Coordinator extends AbstractActor{
     public enum Decision {ABORT, COMMIT}
 
     public static class VoteRequest implements Serializable {
-        public final ActorRef client;
-        public VoteRequest(ActorRef client) {
-            this.client = client;
+        public final String transactionId;
+        public VoteRequest(String transactionId) {
+            this.transactionId = transactionId;
         }
     }
 
     public static class VoteResponse implements Serializable {
-        public final ActorRef client;
+        public final String transactionId;
         public final Vote vote;
-        public VoteResponse(ActorRef client, Vote v) {
-            this.client = client;
+        public VoteResponse(String transactionId, Vote v) {
+            this.transactionId = transactionId;
             vote = v;
         }
     }
 
     public static class DecisionMsg implements Serializable {
-        public final ActorRef client;
+        public final String transactionId;
         public final Decision decision;
-        public DecisionMsg(ActorRef client, Decision d) {
-            this.client = client;
+        public DecisionMsg(String transactionId, Decision d) {
+            this.transactionId = transactionId;
             decision = d;
         }
     }
@@ -105,84 +110,90 @@ public class Coordinator extends AbstractActor{
     private void onTxnBeginMsg(Client.TxnBeginMsg msg) {
         ActorRef currentClient = getSender();
         currentClient.tell(new Client.TxnAcceptMsg(), getSelf());
-        ensureContactedServersExists(currentClient);
+        initializeTransaction(currentClient);
     }
 
-    private void ensureContactedServersExists(ActorRef client) {
-        if (!ongoingTransactions.containsKey(client)) {
-            ongoingTransactions.put(client, new TransactionInfo());
-        }
+    private void initializeTransaction(ActorRef client) {
+        String transactionId = coordinatorId + "." + transactionsCounter;
+        ongoingTransactions.put(transactionId, new TransactionInfo(client));
+        transactionIdForClients.put(client, transactionId);
+        transactionsCounter++;
     }
 
-    private void addContactedServer(ActorRef client, ActorRef server) {
-        ongoingTransactions.get(client).servers.add(server);
+    private void addContactedServer(String transactionId, ActorRef server) {
+        ongoingTransactions.get(transactionId).contactedServers.add(server);
     }
 
     private void onReadMsg(Client.ReadMsg msg) {
         ActorRef currentClient = getSender();
+        String transactionId = transactionIdForClients.get(currentClient);
         ActorRef currentServer = getServerFromKey(msg.key);
-        currentServer.tell(new ReadMsg(getSender(), msg.key), getSelf());
-        addContactedServer(currentClient, currentServer);
+        currentServer.tell(new ReadMsg(transactionId, msg.key), getSelf());
+        addContactedServer(transactionId, currentServer);
     }
 
     private void onReadResultMsg(ReadResultMsg msg) {
-        msg.client.tell(new Client.ReadResultMsg(msg.key, msg.value), getSelf());
+        ActorRef currentClient = ongoingTransactions.get(msg.transactionId).client;
+        currentClient.tell(new Client.ReadResultMsg(msg.key, msg.value), getSelf());
 
-        System.out.println("COORDINATOR " + coordinatorId + " SEND READ RESULT (" + msg.key + ", " + msg.value + ") TO " + msg.client.path().name());
+        System.out.println("COORDINATOR " + coordinatorId + " SEND READ RESULT (" + msg.key + ", " + msg.value + ") TO " + currentClient.path().name());
     }
 
     private void onWriteMsg(Client.WriteMsg msg) {
         ActorRef currentClient = getSender();
+        String transactionId = transactionIdForClients.get(currentClient);
         ActorRef currentServer = getServerFromKey(msg.key);
-        currentServer.tell(new WriteMsg(currentClient, msg.key, msg.value), getSelf());
-        addContactedServer(currentClient, currentServer);
+
+        currentServer.tell(new WriteMsg(transactionId, msg.key, msg.value), getSelf());
+        addContactedServer(transactionId, currentServer);
 
         System.out.println("COORDINATOR " + coordinatorId + " WRITE (" + msg.key + ", " + msg.value + ")");
     }
 
     private void onTxnEndMsg(Client.TxnEndMsg msg) {
         ActorRef currentClient = getSender();
+        String transactionId = transactionIdForClients.get(currentClient);
 
         if (msg.commit) {
-            Set<ActorRef> contactedServers = ongoingTransactions.get(currentClient).servers;
+            Set<ActorRef> contactedServers = ongoingTransactions.get(transactionId).contactedServers;
             for(ActorRef server : contactedServers) {
-                server.tell(new VoteRequest(currentClient), getSelf());
+                server.tell(new VoteRequest(transactionId), getSelf());
             }
         } else {
             currentClient.tell(new Client.TxnResultMsg(false), getSelf());
-            sendDecisionToAllContactedServers(currentClient, Decision.ABORT);
-            ongoingTransactions.remove(currentClient);
+            sendDecisionToAllContactedServers(transactionId, Decision.ABORT);
+            ongoingTransactions.remove(transactionId);
         }
 
         System.out.println("COORDINATOR " + coordinatorId + " END");
     }
 
     private void onVoteResponseMsg(VoteResponse msg) {
-        TransactionInfo currentTransactionInfo = ongoingTransactions.get(msg.client);
+        TransactionInfo currentTransactionInfo = ongoingTransactions.get(msg.transactionId);
 
         if (currentTransactionInfo != null) {
             if (msg.vote == Vote.YES) {
                 currentTransactionInfo.nYesVotes++;
 
-                if (currentTransactionInfo.nYesVotes == currentTransactionInfo.servers.size()) {
-                    msg.client.tell(new Client.TxnResultMsg(true), getSelf());
-                    sendDecisionToAllContactedServers(msg.client, Decision.COMMIT);
+                if (currentTransactionInfo.nYesVotes == currentTransactionInfo.contactedServers.size()) {
+                    currentTransactionInfo.client.tell(new Client.TxnResultMsg(true), getSelf());
+                    sendDecisionToAllContactedServers(msg.transactionId, Decision.COMMIT);
                     System.out.println("COORDINATOR " + coordinatorId + " COMMIT OK");
-                    ongoingTransactions.remove(msg.client);
+                    ongoingTransactions.remove(msg.transactionId);
                 }
             } else {
-                msg.client.tell(new Client.TxnResultMsg(false), getSelf());
-                sendDecisionToAllContactedServers(msg.client, Decision.ABORT);
+                currentTransactionInfo.client.tell(new Client.TxnResultMsg(false), getSelf());
+                sendDecisionToAllContactedServers(msg.transactionId, Decision.ABORT);
                 System.out.println("COORDINATOR " + coordinatorId + " COMMIT FAIL");
-                ongoingTransactions.remove(msg.client);
+                ongoingTransactions.remove(msg.transactionId);
             }
         }
     }
 
-    private void sendDecisionToAllContactedServers(ActorRef client, Decision decision) {
-        TransactionInfo currentTransactionInfo = ongoingTransactions.get(client);
-        for(ActorRef server : currentTransactionInfo.servers) {
-            server.tell(new DecisionMsg(client, decision), getSelf());
+    private void sendDecisionToAllContactedServers(String transactionId, Decision decision) {
+        TransactionInfo currentTransactionInfo = ongoingTransactions.get(transactionId);
+        for(ActorRef server : currentTransactionInfo.contactedServers) {
+            server.tell(new DecisionMsg(transactionId, decision), getSelf());
         }
     }
 

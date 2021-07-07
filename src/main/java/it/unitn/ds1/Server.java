@@ -11,8 +11,8 @@ public class Server extends AbstractActor {
 
     private final Integer serverId;
     private final DataEntry[] globalWorkspace = new DataEntry[Main.N_KEYS_PER_SERVER];
-    private final Map<ActorRef, DataEntry[]> localWorkspaces = new HashMap<>();
-    private final Set<ActorRef> yesVotes = new HashSet<>();
+    private final Map<String, DataEntry[]> localWorkspaces = new HashMap<>();
+    private final Set<String> yesVotes = new HashSet<>();
 
     public static class DataEntry {
         public Integer version;
@@ -46,10 +46,10 @@ public class Server extends AbstractActor {
     public static class LogRequestMsg implements Serializable {}
 
     private void onReadMsg(Coordinator.ReadMsg msg) {
-        ensureLocalWorkspaceExists(msg.client);
+        ensureLocalWorkspaceExists(msg.transactionId);
 
-        DataEntry[] localWorkspace = localWorkspaces.get(msg.client);
-        Coordinator.ReadResultMsg readResult = new Coordinator.ReadResultMsg(msg.client, msg.key, localWorkspace[msg.key % 10].value);
+        DataEntry[] localWorkspace = localWorkspaces.get(msg.transactionId);
+        Coordinator.ReadResultMsg readResult = new Coordinator.ReadResultMsg(msg.transactionId, msg.key, localWorkspace[msg.key % 10].value);
         localWorkspace[msg.key % 10].readsCounter++;
 
         ActorRef currentCoordinator = getSender();
@@ -59,9 +59,9 @@ public class Server extends AbstractActor {
     }
 
     private void onWriteMsg(Coordinator.WriteMsg msg) {
-        ensureLocalWorkspaceExists(msg.client);
+        ensureLocalWorkspaceExists(msg.transactionId);
 
-        DataEntry[] localWorkspace = localWorkspaces.get(msg.client);
+        DataEntry[] localWorkspace = localWorkspaces.get(msg.transactionId);
         localWorkspace[msg.key % 10].value = msg.value;
         localWorkspace[msg.key % 10].writesCounter++;
 
@@ -69,7 +69,7 @@ public class Server extends AbstractActor {
     }
 
     private void onVoteRequestMsg(Coordinator.VoteRequest msg) {
-        DataEntry[] localWorkspace = localWorkspaces.get(msg.client);
+        DataEntry[] localWorkspace = localWorkspaces.get(msg.transactionId);
         boolean canCommit = true;
 
         for (int i = 0; i < Main.N_KEYS_PER_SERVER; i++) {
@@ -109,27 +109,27 @@ public class Server extends AbstractActor {
         Coordinator.Vote vote;
         if (canCommit) {
             vote = Coordinator.Vote.YES;
-            yesVotes.add(msg.client);
+            yesVotes.add(msg.transactionId);
         } else {
             vote = Coordinator.Vote.NO;
         }
 
         ActorRef currentCoordinator = getSender();
-        currentCoordinator.tell(new Coordinator.VoteResponse(msg.client, vote), getSelf());
+        currentCoordinator.tell(new Coordinator.VoteResponse(msg.transactionId, vote), getSelf());
 
         System.out.println("SERVER " + serverId + " VOTE " + vote);
     }
 
     private void onDecisionMsg(Coordinator.DecisionMsg msg) {
-        DataEntry[] localWorkspace = localWorkspaces.get(msg.client);
+        DataEntry[] localWorkspace = localWorkspaces.get(msg.transactionId);
 
-        if (yesVotes.contains(msg.client)) {
+        if (yesVotes.contains(msg.transactionId)) {
             //remove locks in the global workspace
             for (int i = 0; i < Main.N_KEYS_PER_SERVER; i++) {
                 globalWorkspace[i].readsCounter -= localWorkspace[i].readsCounter;
                 globalWorkspace[i].writesCounter -= localWorkspace[i].writesCounter;
             }
-            yesVotes.remove(msg.client);
+            yesVotes.remove(msg.transactionId);
         }
 
         if (msg.decision == Coordinator.Decision.COMMIT) {
@@ -142,7 +142,7 @@ public class Server extends AbstractActor {
             }
         }
 
-        localWorkspaces.remove(msg.client);
+        localWorkspaces.remove(msg.transactionId);
 
         System.out.println("SERVER " + serverId + " FINAL DECISION " + msg.decision);
     }
@@ -155,13 +155,13 @@ public class Server extends AbstractActor {
         System.out.println("SERVER " + serverId + " FINAL SUM " + sum);
     }
 
-    private void ensureLocalWorkspaceExists(ActorRef client) {
-        if (!localWorkspaces.containsKey(client)) {
+    private void ensureLocalWorkspaceExists(String transactionId) {
+        if (!localWorkspaces.containsKey(transactionId)) {
             DataEntry[] localWorkspace = new DataEntry[Main.N_KEYS_PER_SERVER];
             for (int i = 0; i < Main.N_KEYS_PER_SERVER; i++) {
                 localWorkspace[i] = new DataEntry(globalWorkspace[i].version, globalWorkspace[i].value);
             }
-            localWorkspaces.put(client, localWorkspace);
+            localWorkspaces.put(transactionId, localWorkspace);
         }
     }
 

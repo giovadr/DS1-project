@@ -56,23 +56,24 @@ public class Main {
     } 
     catch (IOException ignored) {}
 
-/*
     Client.StopMsg stopMsg = new Client.StopMsg();
     for (ActorRef server: clientsGroup) {
       server.tell(stopMsg, null);
     }
-*/
 
+    // wait for all messages to flush
+    try { Thread.sleep(2000); }
+    catch (InterruptedException e) { e.printStackTrace(); }
+
+    // send requests to servers to log the sum of their values
     Server.LogRequestMsg logRequestMsg = new Server.LogRequestMsg();
     for (ActorRef server: serversGroup) {
       server.tell(logRequestMsg, null);
     }
 
-    try {
-      System.out.println(">>> Press ENTER to exit <<<");
-      System.in.read();
-    }
-    catch (IOException ignored) {}
+    // wait for all servers to log the sum of their values
+    try { Thread.sleep(2000); }
+    catch (InterruptedException e) { e.printStackTrace(); }
 
     system.terminate();
   }

@@ -5,7 +5,7 @@ compute_final_sum:
 	./compute_final_sum.sh 'test.log'
 
 run_and_log:
-	gradle run | tee 'test.log'
+	gradle run > 'test.log'
 
 
 
