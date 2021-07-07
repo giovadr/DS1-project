@@ -12,6 +12,7 @@ public class Server extends AbstractActor {
     private final Integer serverId;
     private final DataEntry[] globalWorkspace = new DataEntry[Main.N_KEYS_PER_SERVER];
     private final Map<ActorRef, DataEntry[]> localWorkspaces = new HashMap<>();
+    private final Set<ActorRef> yesVotes = new HashSet<>();
 
     public static class DataEntry {
         public Integer version;
@@ -23,6 +24,11 @@ public class Server extends AbstractActor {
             this.value = value;
             this.readsCounter = 0;
             this.writesCounter = 0;
+        }
+
+        @Override
+        public String toString() {
+            return "(" + version + "," + value + "," + readsCounter + "," + writesCounter + ")";
         }
     }
 
@@ -67,6 +73,8 @@ public class Server extends AbstractActor {
         boolean canCommit = true;
 
         for (int i = 0; i < Main.N_KEYS_PER_SERVER; i++) {
+            if (globalWorkspace[i].readsCounter < 0 || globalWorkspace[i].writesCounter < 0) throw new RuntimeException("LOCKS COUNTERS ARE NEGATIVE!");
+            System.out.println("SERVER " + serverId + "." + i + " global = " + globalWorkspace[i] + " | local = " + localWorkspace[i]);
             // check that versions are the same, only if there were reads or writes
             if ((localWorkspace[i].readsCounter > 0 || localWorkspace[i].writesCounter > 0) && !localWorkspace[i].version.equals(globalWorkspace[i].version)) {
                 System.out.println("SERVER " + serverId + " VERSIONS ARE DIFFERENT");
@@ -101,6 +109,7 @@ public class Server extends AbstractActor {
         Coordinator.Vote vote;
         if (canCommit) {
             vote = Coordinator.Vote.YES;
+            yesVotes.add(msg.client);
         } else {
             vote = Coordinator.Vote.NO;
         }
@@ -114,16 +123,19 @@ public class Server extends AbstractActor {
     private void onDecisionMsg(Coordinator.DecisionMsg msg) {
         DataEntry[] localWorkspace = localWorkspaces.get(msg.client);
 
-        //remove locks in the global workspace
-        for (int i = 0; i < Main.N_KEYS_PER_SERVER; i++) {
-            globalWorkspace[i].readsCounter -= localWorkspace[i].readsCounter;
-            globalWorkspace[i].writesCounter -= localWorkspace[i].writesCounter;
+        if (yesVotes.contains(msg.client)) {
+            //remove locks in the global workspace
+            for (int i = 0; i < Main.N_KEYS_PER_SERVER; i++) {
+                globalWorkspace[i].readsCounter -= localWorkspace[i].readsCounter;
+                globalWorkspace[i].writesCounter -= localWorkspace[i].writesCounter;
+            }
+            yesVotes.remove(msg.client);
         }
 
         if (msg.decision == Coordinator.Decision.COMMIT) {
             // update values that were written
             for (int i = 0; i < Main.N_KEYS_PER_SERVER; i++) {
-                if(localWorkspace[i].writesCounter > 0) {
+                if (localWorkspace[i].writesCounter > 0) {
                     globalWorkspace[i].version++;
                     globalWorkspace[i].value = localWorkspace[i].value;
                 }
