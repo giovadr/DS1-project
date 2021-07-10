@@ -10,8 +10,18 @@ import java.util.*;
 public class Server extends Node {
 
     private final DataEntry[] globalWorkspace = new DataEntry[Main.N_KEYS_PER_SERVER];
-    private final Map<String, DataEntry[]> localWorkspaces = new HashMap<>();
-    private final Set<String> yesVotes = new HashSet<>();
+    private final Map<String, Transaction> transactions = new HashMap<>();
+
+    public static class Transaction {
+        DataEntry[] localWorkspace;
+        Set<ActorRef> contactedServers;
+        Vote vote;
+        public Transaction() {
+            this.localWorkspace = new DataEntry[Main.N_KEYS_PER_SERVER];
+            this.contactedServers = new HashSet<>();
+            this.vote = null;
+        }
+    }
 
     public static class DataEntry {
         public Integer version;
@@ -47,7 +57,7 @@ public class Server extends Node {
     private void onReadMsg(ReadMsg msg) {
         ensureLocalWorkspaceExists(msg.transactionId);
 
-        DataEntry[] localWorkspace = localWorkspaces.get(msg.transactionId);
+        DataEntry[] localWorkspace = transactions.get(msg.transactionId).localWorkspace;
         ReadResultMsg readResult = new ReadResultMsg(msg.transactionId, msg.key, localWorkspace[msg.key % 10].value);
         localWorkspace[msg.key % 10].readsCounter++;
 
@@ -60,7 +70,7 @@ public class Server extends Node {
     private void onWriteMsg(WriteMsg msg) {
         ensureLocalWorkspaceExists(msg.transactionId);
 
-        DataEntry[] localWorkspace = localWorkspaces.get(msg.transactionId);
+        DataEntry[] localWorkspace = transactions.get(msg.transactionId).localWorkspace;
         localWorkspace[msg.key % 10].value = msg.value;
         localWorkspace[msg.key % 10].writesCounter++;
 
@@ -68,7 +78,9 @@ public class Server extends Node {
     }
 
     private void onVoteRequestMsg(VoteRequest msg) {
-        DataEntry[] localWorkspace = localWorkspaces.get(msg.transactionId);
+        Transaction currentTransaction = transactions.get(msg.transactionId);
+        DataEntry[] localWorkspace = currentTransaction.localWorkspace;
+        currentTransaction.contactedServers = msg.contactedServers;
         boolean canCommit = true;
 
         for (int i = 0; i < Main.N_KEYS_PER_SERVER; i++) {
@@ -97,21 +109,20 @@ public class Server extends Node {
 
         System.out.println("SERVER " + id + " CAN COMMIT? " + canCommit);
 
+        Vote vote;
+
         // update locks in the global workspace
         if (canCommit) {
             for (int i = 0; i < Main.N_KEYS_PER_SERVER; i++) {
                 globalWorkspace[i].readsCounter += localWorkspace[i].readsCounter;
                 globalWorkspace[i].writesCounter += localWorkspace[i].writesCounter;
             }
-        }
-
-        Vote vote;
-        if (canCommit) {
             vote = Vote.YES;
-            yesVotes.add(msg.transactionId);
         } else {
             vote = Vote.NO;
         }
+
+        currentTransaction.vote = vote;
 
         ActorRef currentCoordinator = getSender();
         currentCoordinator.tell(new VoteResponse(msg.transactionId, vote), getSelf());
@@ -120,15 +131,15 @@ public class Server extends Node {
     }
 
     private void onDecisionResponseMsg(DecisionResponse msg) {
-        DataEntry[] localWorkspace = localWorkspaces.get(msg.transactionId);
+        Transaction currentTransaction = transactions.get(msg.transactionId);
+        DataEntry[] localWorkspace = currentTransaction.localWorkspace;
 
-        if (yesVotes.contains(msg.transactionId)) {
+        if (currentTransaction.vote == Vote.YES) {
             //remove locks in the global workspace
             for (int i = 0; i < Main.N_KEYS_PER_SERVER; i++) {
                 globalWorkspace[i].readsCounter -= localWorkspace[i].readsCounter;
                 globalWorkspace[i].writesCounter -= localWorkspace[i].writesCounter;
             }
-            yesVotes.remove(msg.transactionId);
         }
 
         if (msg.decision == Decision.COMMIT) {
@@ -141,7 +152,7 @@ public class Server extends Node {
             }
         }
 
-        localWorkspaces.remove(msg.transactionId);
+        transactions.remove(msg.transactionId);
 
         System.out.println("SERVER " + id + " FINAL DECISION " + msg.decision);
     }
@@ -155,12 +166,12 @@ public class Server extends Node {
     }
 
     private void ensureLocalWorkspaceExists(String transactionId) {
-        if (!localWorkspaces.containsKey(transactionId)) {
-            DataEntry[] localWorkspace = new DataEntry[Main.N_KEYS_PER_SERVER];
+        if (!transactions.containsKey(transactionId)) {
+            Transaction t = new Transaction();
             for (int i = 0; i < Main.N_KEYS_PER_SERVER; i++) {
-                localWorkspace[i] = new DataEntry(globalWorkspace[i].version, globalWorkspace[i].value);
+                t.localWorkspace[i] = new DataEntry(globalWorkspace[i].version, globalWorkspace[i].value);
             }
-            localWorkspaces.put(transactionId, localWorkspace);
+            transactions.put(transactionId, t);
         }
     }
 

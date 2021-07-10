@@ -57,8 +57,10 @@ public abstract class Node extends AbstractActor {
     public enum Decision {ABORT, COMMIT}
 
     public static class VoteRequest extends Message {
-        public VoteRequest(String transactionId) {
+        public final Set<ActorRef> contactedServers;
+        public VoteRequest(String transactionId, Set<ActorRef> contactedServers) {
             super(transactionId);
+            this.contactedServers = Collections.unmodifiableSet(new HashSet<>(contactedServers));
         }
     }
 

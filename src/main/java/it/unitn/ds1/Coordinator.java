@@ -80,7 +80,7 @@ public class Coordinator extends Node {
         if (msg.commit) {
             Set<ActorRef> contactedServers = ongoingTransactions.get(transactionId).contactedServers;
             for(ActorRef server : contactedServers) {
-                server.tell(new VoteRequest(transactionId), getSelf());
+                server.tell(new VoteRequest(transactionId, contactedServers), getSelf());
             }
         } else {
             currentClient.tell(new Client.TxnResultMsg(false), getSelf());
