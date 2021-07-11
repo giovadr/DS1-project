@@ -6,6 +6,10 @@ import java.io.Serializable;
 import java.util.*;
 
 public class Coordinator extends Node {
+    public enum CrashType {NONE, AFTER_FIRST_SEND, AFTER_ALL_SENDS}
+    final static CrashType CRASH_DURING_VOTE_REQUEST = CrashType.NONE;
+    final static CrashType CRASH_DURING_SEND_DECISION = CrashType.NONE;
+
     private Integer transactionsCounter;
     private final Map<String, TransactionInfo> ongoingTransactions = new HashMap<>();
     private final Map<ActorRef, String> transactionIdForClients = new HashMap<>();
@@ -19,14 +23,20 @@ public class Coordinator extends Node {
         return Props.create(Coordinator.class, () -> new Coordinator(coordinatorId));
     }
 
-    public static class TransactionInfo implements Serializable {
+    private static class TransactionInfo {
         public final ActorRef client;
         public final Set<ActorRef> contactedServers;
         public Integer nYesVotes;
+        public boolean isTransactionEnded;
         public TransactionInfo(ActorRef client) {
             this.client = client;
             this.contactedServers = new HashSet<>();
             this.nYesVotes = 0;
+            this.isTransactionEnded = false;
+        }
+
+        public boolean everyoneVotedYes() {
+            return nYesVotes == contactedServers.size();
         }
     }
 
@@ -34,17 +44,6 @@ public class Coordinator extends Node {
         ActorRef currentClient = getSender();
         currentClient.tell(new Client.TxnAcceptMsg(), getSelf());
         initializeTransaction(currentClient);
-    }
-
-    private void initializeTransaction(ActorRef client) {
-        String transactionId = id + "." + transactionsCounter;
-        ongoingTransactions.put(transactionId, new TransactionInfo(client));
-        transactionIdForClients.put(client, transactionId);
-        transactionsCounter++;
-    }
-
-    private void addContactedServer(String transactionId, ActorRef server) {
-        ongoingTransactions.get(transactionId).contactedServers.add(server);
     }
 
     private void onReadMsg(Client.ReadMsg msg) {
@@ -76,16 +75,22 @@ public class Coordinator extends Node {
     private void onTxnEndMsg(Client.TxnEndMsg msg) {
         ActorRef currentClient = getSender();
         String transactionId = transactionIdForClients.get(currentClient);
+        TransactionInfo currentTransactionInfo = ongoingTransactions.get(transactionId);
+
+        currentTransactionInfo.isTransactionEnded = true;
 
         if (msg.commit) {
-            Set<ActorRef> contactedServers = ongoingTransactions.get(transactionId).contactedServers;
-            for(ActorRef server : contactedServers) {
-                server.tell(new VoteRequest(transactionId, contactedServers), getSelf());
-            }
+            Set<ActorRef> contactedServers = currentTransactionInfo.contactedServers;
+
+            multicastAndSimulateCrash(new VoteRequest(transactionId, contactedServers), contactedServers, CRASH_DURING_VOTE_REQUEST);
         } else {
             currentClient.tell(new Client.TxnResultMsg(false), getSelf());
-            sendDecisionToAllContactedServers(transactionId, Decision.ABORT);
-            ongoingTransactions.remove(transactionId);
+            fixDecision(transactionId, Decision.ABORT);
+            multicastAndSimulateCrash(
+                    new DecisionResponse(transactionId, Decision.ABORT),
+                    currentTransactionInfo.contactedServers,
+                    CRASH_DURING_SEND_DECISION
+            );
         }
 
         System.out.println("COORDINATOR " + id + " END");
@@ -98,19 +103,64 @@ public class Coordinator extends Node {
             if (msg.vote == Vote.YES) {
                 currentTransactionInfo.nYesVotes++;
 
-                if (currentTransactionInfo.nYesVotes == currentTransactionInfo.contactedServers.size()) {
+                if (currentTransactionInfo.everyoneVotedYes()) {
+                    fixDecision(msg.transactionId, Decision.COMMIT);
                     currentTransactionInfo.client.tell(new Client.TxnResultMsg(true), getSelf());
-                    sendDecisionToAllContactedServers(msg.transactionId, Decision.COMMIT);
+                    multicastAndSimulateCrash(
+                            new DecisionResponse(msg.transactionId, Decision.COMMIT),
+                            currentTransactionInfo.contactedServers,
+                            CRASH_DURING_SEND_DECISION
+                    );
                     System.out.println("COORDINATOR " + id + " COMMIT OK");
-                    ongoingTransactions.remove(msg.transactionId);
                 }
             } else {
+                fixDecision(msg.transactionId, Decision.ABORT);
                 currentTransactionInfo.client.tell(new Client.TxnResultMsg(false), getSelf());
-                sendDecisionToAllContactedServers(msg.transactionId, Decision.ABORT);
+                multicastAndSimulateCrash(
+                            new DecisionResponse(msg.transactionId, Decision.ABORT),
+                            currentTransactionInfo.contactedServers,
+                            CRASH_DURING_SEND_DECISION
+                );
                 System.out.println("COORDINATOR " + id + " COMMIT FAIL");
-                ongoingTransactions.remove(msg.transactionId);
             }
         }
+    }
+
+    @Override
+    public void onRecovery(Recovery msg) {
+        getContext().become(createReceive());
+
+        //coordinator recovery action
+        for (Map.Entry<String, TransactionInfo> ongoingTransaction: ongoingTransactions.entrySet()){
+            if (ongoingTransaction.getValue().isTransactionEnded) {
+                String transactionId = ongoingTransaction.getKey();
+                if(!hasDecided(transactionId)) {
+                    fixDecision(transactionId, Decision.ABORT);
+                    ongoingTransaction.getValue().client.tell(new Client.TxnResultMsg(false), getSelf());
+                }
+
+                Decision decision = decisions.get(transactionId);
+                Set<ActorRef> contactedServers = ongoingTransaction.getValue().contactedServers;
+                multicast(new DecisionResponse(transactionId, decision), contactedServers);
+                ongoingTransactions.remove(transactionId);
+            }
+        }
+    }
+
+    private void initializeTransaction(ActorRef client) {
+        String transactionId = id + "." + transactionsCounter;
+        ongoingTransactions.put(transactionId, new TransactionInfo(client));
+        transactionIdForClients.put(client, transactionId);
+        transactionsCounter++;
+    }
+
+    private void addContactedServer(String transactionId, ActorRef server) {
+        ongoingTransactions.get(transactionId).contactedServers.add(server);
+    }
+
+    private ActorRef getServerFromKey(int key) {
+        int serverId = key / 10;
+        return servers.get(serverId);
     }
 
     private void sendDecisionToAllContactedServers(String transactionId, Decision decision) {
@@ -120,9 +170,20 @@ public class Coordinator extends Node {
         }
     }
 
-    private ActorRef getServerFromKey(int key) {
-        int serverId = key / 10;
-        return servers.get(serverId);
+    private void multicastAndSimulateCrash(Message msg, Set<ActorRef> receivers, CrashType crashType) {
+        switch (crashType) {
+            case NONE:
+                multicast(msg, receivers);
+                ongoingTransactions.remove(msg.transactionId);
+                break;
+            case AFTER_FIRST_SEND:
+                multicastAndCrash(msg, receivers, 3000);
+                break;
+            case AFTER_ALL_SENDS:
+                multicast(msg, receivers);
+                crash(5000);
+                break;
+        }
     }
 
     @Override

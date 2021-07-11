@@ -10,13 +10,13 @@ import java.util.*;
 public class Server extends Node {
 
     private final DataEntry[] globalWorkspace = new DataEntry[Main.N_KEYS_PER_SERVER];
-    private final Map<String, Transaction> transactions = new HashMap<>();
+    private final Map<String, TransactionInfo> transactions = new HashMap<>();
 
-    public static class Transaction {
+    private static class TransactionInfo {
         DataEntry[] localWorkspace;
         Set<ActorRef> contactedServers;
         Vote vote;
-        public Transaction() {
+        public TransactionInfo() {
             this.localWorkspace = new DataEntry[Main.N_KEYS_PER_SERVER];
             this.contactedServers = new HashSet<>();
             this.vote = null;
@@ -78,9 +78,9 @@ public class Server extends Node {
     }
 
     private void onVoteRequestMsg(VoteRequest msg) {
-        Transaction currentTransaction = transactions.get(msg.transactionId);
-        DataEntry[] localWorkspace = currentTransaction.localWorkspace;
-        currentTransaction.contactedServers = msg.contactedServers;
+        TransactionInfo currentTransactionInfo = transactions.get(msg.transactionId);
+        DataEntry[] localWorkspace = currentTransactionInfo.localWorkspace;
+        currentTransactionInfo.contactedServers = msg.contactedServers;
         boolean canCommit = true;
 
         for (int i = 0; i < Main.N_KEYS_PER_SERVER; i++) {
@@ -122,7 +122,7 @@ public class Server extends Node {
             vote = Vote.NO;
         }
 
-        currentTransaction.vote = vote;
+        currentTransactionInfo.vote = vote;
 
         ActorRef currentCoordinator = getSender();
         currentCoordinator.tell(new VoteResponse(msg.transactionId, vote), getSelf());
@@ -131,10 +131,10 @@ public class Server extends Node {
     }
 
     private void onDecisionResponseMsg(DecisionResponse msg) {
-        Transaction currentTransaction = transactions.get(msg.transactionId);
-        DataEntry[] localWorkspace = currentTransaction.localWorkspace;
+        TransactionInfo currentTransactionInfo = transactions.get(msg.transactionId);
+        DataEntry[] localWorkspace = currentTransactionInfo.localWorkspace;
 
-        if (currentTransaction.vote == Vote.YES) {
+        if (currentTransactionInfo.vote == Vote.YES) {
             //remove locks in the global workspace
             for (int i = 0; i < Main.N_KEYS_PER_SERVER; i++) {
                 globalWorkspace[i].readsCounter -= localWorkspace[i].readsCounter;
@@ -152,9 +152,15 @@ public class Server extends Node {
             }
         }
 
+        fixDecision(msg.transactionId, msg.decision);
         transactions.remove(msg.transactionId);
 
         System.out.println("SERVER " + id + " FINAL DECISION " + msg.decision);
+    }
+
+    @Override
+    public void onRecovery(Recovery msg) {
+
     }
 
     private void onLogRequestMsg(LogRequestMsg msg) {
@@ -167,7 +173,7 @@ public class Server extends Node {
 
     private void ensureLocalWorkspaceExists(String transactionId) {
         if (!transactions.containsKey(transactionId)) {
-            Transaction t = new Transaction();
+            TransactionInfo t = new TransactionInfo();
             for (int i = 0; i < Main.N_KEYS_PER_SERVER; i++) {
                 t.localWorkspace[i] = new DataEntry(globalWorkspace[i].version, globalWorkspace[i].value);
             }

@@ -86,25 +86,21 @@ public abstract class Node extends AbstractActor {
         }
     }
 
-/*
     public static class Timeout implements Serializable {}
 
     public static class Recovery implements Serializable {}
-*/
 
     protected void onWelcomeMsg(WelcomeMsg msg) {
         this.servers = msg.servers;
         System.out.println(servers);
     }
 
-/*
     // abstract method to be implemented in extending classes
     protected abstract void onRecovery(Recovery msg);
 
     // emulate a crash and a recovery in a given time
     void crash(int recoverIn) {
         getContext().become(crashed());
-        print("CRASH!!!");
 
         // setting a timer to "recover"
         getContext().system().scheduler().scheduleOnce(
@@ -115,24 +111,26 @@ public abstract class Node extends AbstractActor {
         );
     }
 
+
     // emulate a delay of d milliseconds
     void delay(int d) {
         try {Thread.sleep(d);} catch (Exception ignored) {}
     }
 
-    void multicast(Serializable m) {
-        for (ActorRef p: servers)
-            p.tell(m, getSelf());
+    void multicast(Serializable m, Set<ActorRef> receivers) {
+        for (ActorRef receiver: receivers)
+            receiver.tell(m, getSelf());
     }
 
     // a multicast implementation that crashes after sending the first message
-    void multicastAndCrash(Serializable m, int recoverIn) {
-        for (ActorRef p: servers) {
-            p.tell(m, getSelf());
-            crash(recoverIn); return;
+    void multicastAndCrash(Serializable m, Set<ActorRef> receivers, int recoverIn) {
+        for (ActorRef receiver: receivers) {
+            receiver.tell(m, getSelf());
+            crash(recoverIn);
+            return;
         }
     }
-
+/*
     // schedule a Timeout message in specified time
     void setTimeout(int time) {
         getContext().system().scheduler().scheduleOnce(
@@ -142,29 +140,27 @@ public abstract class Node extends AbstractActor {
                 getContext().system().dispatcher(), getSelf()
         );
     }
+*/
 
     // fix the final decision of the current node
     void fixDecision(String transactionId, Decision d) {
         if (!hasDecided(transactionId)) {
             this.decisions.put(transactionId, d);
-            print("decided " + d);
         }
     }
 
-    boolean hasDecided(String transactionId) { return decisions.containsKey(transactionId); } // has the node decided?
-
-    // a simple logging function
-    void print(String s) {
-        System.out.format("%2d: %s\n", id, s);
+    boolean hasDecided(String transactionId) {
+        return decisions.containsKey(transactionId);
     }
 
     public Receive crashed() {
         return receiveBuilder()
+                // TODO: add handlers for reads and writes
                 .match(Recovery.class, this::onRecovery)
                 .matchAny(msg -> {})
                 .build();
     }
-
+/*
     public void onDecisionRequest(DecisionRequest msg) {  */
 /* Decision Request *//*
 
