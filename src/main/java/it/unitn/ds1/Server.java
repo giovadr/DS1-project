@@ -8,17 +8,20 @@ import java.io.Serializable;
 import java.util.*;
 
 public class Server extends Node {
+    final static int DECISION_TIMEOUT = 2000;  // timeout for the decision, ms
 
     private final DataEntry[] globalWorkspace = new DataEntry[Main.N_KEYS_PER_SERVER];
-    private final Map<String, TransactionInfo> transactions = new HashMap<>();
+    private final Map<String, TransactionInfo> ongoingTransactions = new HashMap<>();
 
     private static class TransactionInfo {
         DataEntry[] localWorkspace;
+        ActorRef coordinator;
         Set<ActorRef> contactedServers;
         Vote vote;
         public TransactionInfo() {
             this.localWorkspace = new DataEntry[Main.N_KEYS_PER_SERVER];
-            this.contactedServers = new HashSet<>();
+            this.coordinator = null;
+            this.contactedServers = null;
             this.vote = null;
         }
     }
@@ -55,22 +58,22 @@ public class Server extends Node {
     public static class LogRequestMsg implements Serializable {}
 
     private void onReadMsg(ReadMsg msg) {
-        ensureLocalWorkspaceExists(msg.transactionId);
+        ActorRef currentCoordinator = getSender();
+        ensureTransactionIsInitialized(msg.transactionId, currentCoordinator);
 
-        DataEntry[] localWorkspace = transactions.get(msg.transactionId).localWorkspace;
+        DataEntry[] localWorkspace = ongoingTransactions.get(msg.transactionId).localWorkspace;
         ReadResultMsg readResult = new ReadResultMsg(msg.transactionId, msg.key, localWorkspace[msg.key % 10].value);
         localWorkspace[msg.key % 10].readsCounter++;
 
-        ActorRef currentCoordinator = getSender();
         currentCoordinator.tell(readResult, getSelf());
 
         System.out.println("SERVER " + id + " SEND READ RESULT (" + readResult.key + ", " + readResult.value + ") TO COORDINATOR");
     }
 
     private void onWriteMsg(WriteMsg msg) {
-        ensureLocalWorkspaceExists(msg.transactionId);
+        ensureTransactionIsInitialized(msg.transactionId, getSender());
 
-        DataEntry[] localWorkspace = transactions.get(msg.transactionId).localWorkspace;
+        DataEntry[] localWorkspace = ongoingTransactions.get(msg.transactionId).localWorkspace;
         localWorkspace[msg.key % 10].value = msg.value;
         localWorkspace[msg.key % 10].writesCounter++;
 
@@ -78,7 +81,7 @@ public class Server extends Node {
     }
 
     private void onVoteRequestMsg(VoteRequest msg) {
-        TransactionInfo currentTransactionInfo = transactions.get(msg.transactionId);
+        TransactionInfo currentTransactionInfo = ongoingTransactions.get(msg.transactionId);
         DataEntry[] localWorkspace = currentTransactionInfo.localWorkspace;
         currentTransactionInfo.contactedServers = msg.contactedServers;
         boolean canCommit = true;
@@ -120,6 +123,9 @@ public class Server extends Node {
             vote = Vote.YES;
         } else {
             vote = Vote.NO;
+
+            fixDecision(msg.transactionId, Decision.ABORT);
+            ongoingTransactions.remove(msg.transactionId);
         }
 
         currentTransactionInfo.vote = vote;
@@ -127,40 +133,57 @@ public class Server extends Node {
         ActorRef currentCoordinator = getSender();
         currentCoordinator.tell(new VoteResponse(msg.transactionId, vote), getSelf());
 
+        setTimeout(msg.transactionId, DECISION_TIMEOUT);
+
         System.out.println("SERVER " + id + " VOTE " + vote);
     }
 
     private void onDecisionResponseMsg(DecisionResponse msg) {
-        TransactionInfo currentTransactionInfo = transactions.get(msg.transactionId);
-        DataEntry[] localWorkspace = currentTransactionInfo.localWorkspace;
+        if (ongoingTransactions.containsKey(msg.transactionId)) {
+            TransactionInfo currentTransactionInfo = ongoingTransactions.get(msg.transactionId);
+            DataEntry[] localWorkspace = currentTransactionInfo.localWorkspace;
 
-        if (currentTransactionInfo.vote == Vote.YES) {
-            //remove locks in the global workspace
-            for (int i = 0; i < Main.N_KEYS_PER_SERVER; i++) {
-                globalWorkspace[i].readsCounter -= localWorkspace[i].readsCounter;
-                globalWorkspace[i].writesCounter -= localWorkspace[i].writesCounter;
-            }
-        }
+            fixDecision(msg.transactionId, msg.decision);
 
-        if (msg.decision == Decision.COMMIT) {
-            // update values that were written
-            for (int i = 0; i < Main.N_KEYS_PER_SERVER; i++) {
-                if (localWorkspace[i].writesCounter > 0) {
-                    globalWorkspace[i].version++;
-                    globalWorkspace[i].value = localWorkspace[i].value;
+            if (msg.decision == Decision.COMMIT) {
+                // update values that were written
+                for (int i = 0; i < Main.N_KEYS_PER_SERVER; i++) {
+                    if (localWorkspace[i].writesCounter > 0) {
+                        globalWorkspace[i].version++;
+                        globalWorkspace[i].value = localWorkspace[i].value;
+                    }
                 }
             }
+
+            if (currentTransactionInfo.vote == Vote.YES) {
+                //remove locks in the global workspace
+                for (int i = 0; i < Main.N_KEYS_PER_SERVER; i++) {
+                    globalWorkspace[i].readsCounter -= localWorkspace[i].readsCounter;
+                    globalWorkspace[i].writesCounter -= localWorkspace[i].writesCounter;
+                }
+            }
+
+            ongoingTransactions.remove(msg.transactionId);
+
+            System.out.println("SERVER " + id + " FINAL DECISION " + msg.decision);
         }
-
-        fixDecision(msg.transactionId, msg.decision);
-        transactions.remove(msg.transactionId);
-
-        System.out.println("SERVER " + id + " FINAL DECISION " + msg.decision);
     }
 
     @Override
     public void onRecovery(Recovery msg) {
+        // TODO: gestire i crash del server
+    }
 
+    public void onTimeout(Timeout msg) {
+        if (!hasDecided(msg.transactionId)) {  // Termination protocol
+            // ask other contacted servers
+            sendMessageCorrectlyToAllContactedServers(new DecisionRequest(msg.transactionId));
+
+            // ask also the coordinator
+            TransactionInfo currentTransactionInfo = ongoingTransactions.get(msg.transactionId);
+            currentTransactionInfo.coordinator.tell(new DecisionRequest(msg.transactionId), getSelf());
+            setTimeout(msg.transactionId, DECISION_TIMEOUT);
+        }
     }
 
     private void onLogRequestMsg(LogRequestMsg msg) {
@@ -171,13 +194,22 @@ public class Server extends Node {
         System.out.println("SERVER " + id + " FINAL SUM " + sum);
     }
 
-    private void ensureLocalWorkspaceExists(String transactionId) {
-        if (!transactions.containsKey(transactionId)) {
+    private void ensureTransactionIsInitialized(String transactionId, ActorRef coordinator) {
+        if (!ongoingTransactions.containsKey(transactionId)) {
             TransactionInfo t = new TransactionInfo();
             for (int i = 0; i < Main.N_KEYS_PER_SERVER; i++) {
                 t.localWorkspace[i] = new DataEntry(globalWorkspace[i].version, globalWorkspace[i].value);
             }
-            transactions.put(transactionId, t);
+            t.coordinator = coordinator;
+            ongoingTransactions.put(transactionId, t);
+        }
+    }
+
+    // TODO: spostare nella classe Node e fare refactoring
+    private void sendMessageCorrectlyToAllContactedServers(Message msg) {
+        TransactionInfo currentTransactionInfo = ongoingTransactions.get(msg.transactionId);
+        for(ActorRef server : currentTransactionInfo.contactedServers) {
+            server.tell(msg, getSelf());
         }
     }
 
@@ -190,6 +222,8 @@ public class Server extends Node {
                 .match(VoteRequest.class, this::onVoteRequestMsg)
                 .match(DecisionResponse.class, this::onDecisionResponseMsg)
                 .match(LogRequestMsg.class, this::onLogRequestMsg)
+                .match(Timeout.class, this::onTimeout)
+                .match(DecisionRequest.class, this::onDecisionRequest)
                 .build();
     }
 }

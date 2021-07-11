@@ -86,7 +86,11 @@ public abstract class Node extends AbstractActor {
         }
     }
 
-    public static class Timeout implements Serializable {}
+    public static class Timeout extends Message {
+        public Timeout(String transactionId) {
+            super(transactionId);
+        }
+    }
 
     public static class Recovery implements Serializable {}
 
@@ -130,17 +134,16 @@ public abstract class Node extends AbstractActor {
             return;
         }
     }
-/*
+
     // schedule a Timeout message in specified time
-    void setTimeout(int time) {
+    void setTimeout(String transactionId, int time) {
         getContext().system().scheduler().scheduleOnce(
                 Duration.create(time, TimeUnit.MILLISECONDS),
                 getSelf(),
-                new Timeout(), // the message to send
+                new Timeout(transactionId), // the message to send
                 getContext().system().dispatcher(), getSelf()
         );
     }
-*/
 
     // fix the final decision of the current node
     void fixDecision(String transactionId, Decision d) {
@@ -160,14 +163,11 @@ public abstract class Node extends AbstractActor {
                 .matchAny(msg -> {})
                 .build();
     }
-/*
-    public void onDecisionRequest(DecisionRequest msg) {  */
-/* Decision Request *//*
 
+    public void onDecisionRequest(DecisionRequest msg) {
         if (hasDecided(msg.transactionId))
             getSender().tell(new DecisionResponse(msg.transactionId, decisions.get(msg.transactionId)), getSelf());
 
         // just ignoring if we don't know the decision
     }
-*/
 }

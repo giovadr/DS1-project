@@ -84,6 +84,7 @@ public class Coordinator extends Node {
                     new VoteRequest(transactionId, currentTransactionInfo.contactedServers),
                     CRASH_DURING_VOTE_REQUEST
             );
+            // TODO: impostare il timeout
         } else {
             // TODO: bisogna simulare i crash qui? Chiedere all'esercitatore
             fixAndCommunicateDecisionSimulatingCrash(transactionId, Decision.ABORT);
@@ -204,6 +205,7 @@ public class Coordinator extends Node {
                 .match(Client.WriteMsg.class, this::onWriteMsg)
                 .match(Client.TxnEndMsg.class, this::onTxnEndMsg)
                 .match(VoteResponse.class, this::onVoteResponseMsg)
+                .match(DecisionRequest.class, this::onDecisionRequest)
                 .build();
     }
 }
