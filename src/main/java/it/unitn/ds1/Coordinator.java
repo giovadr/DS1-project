@@ -7,6 +7,7 @@ import java.util.*;
 
 public class Coordinator extends Node {
     final static int VOTE_TIMEOUT = 1000;
+    final static int FAULTY_COORDINATOR_ID = 0;
 
     public enum CrashType {NONE, AFTER_FIRST_SEND, AFTER_ALL_SENDS}
     final static CrashType CRASH_DURING_VOTE_REQUEST = CrashType.NONE;
@@ -29,12 +30,10 @@ public class Coordinator extends Node {
         public final ActorRef client;
         public final Set<ActorRef> contactedServers;
         public Integer nYesVotes;
-        public boolean isTransactionEnded;
         public TransactionInfo(ActorRef client) {
             this.client = client;
             this.contactedServers = new HashSet<>();
             this.nYesVotes = 0;
-            this.isTransactionEnded = false;
         }
 
         public boolean everyoneVotedYes() {
@@ -79,17 +78,16 @@ public class Coordinator extends Node {
         String transactionId = transactionIdForClients.get(currentClient);
         TransactionInfo currentTransactionInfo = ongoingTransactions.get(transactionId);
 
-        currentTransactionInfo.isTransactionEnded = true;
-
         if (msg.commit) {
-            sendMessageToAllContactedServersSimulatingCrash(
+            sendMessageSimulatingCrash(transactionId,
                     new VoteRequest(transactionId, currentTransactionInfo.contactedServers),
-                    CRASH_DURING_VOTE_REQUEST
-            );
+                    CRASH_DURING_VOTE_REQUEST);
             setTimeout(transactionId, VOTE_TIMEOUT);
         } else {
-            // TODO: bisogna simulare i crash qui? Chiedere all'esercitatore
-            fixAndCommunicateDecisionSimulatingCrash(transactionId, Decision.ABORT);
+            fixDecision(transactionId, Decision.ABORT);
+            sendMessageSimulatingCrash(transactionId,
+                    new DecisionResponse(transactionId, Decision.ABORT),
+                    CRASH_DURING_SEND_DECISION);
         }
 
         System.out.println("COORDINATOR " + id + " END");
@@ -103,11 +101,17 @@ public class Coordinator extends Node {
                 currentTransactionInfo.nYesVotes++;
 
                 if (currentTransactionInfo.everyoneVotedYes()) {
-                    fixAndCommunicateDecisionSimulatingCrash(msg.transactionId, Decision.COMMIT);
+                    fixDecision(msg.transactionId, Decision.COMMIT);
+                    sendMessageSimulatingCrash(msg.transactionId,
+                            new DecisionResponse(msg.transactionId, Decision.COMMIT),
+                            CRASH_DURING_SEND_DECISION);
                     System.out.println("COORDINATOR " + id + " COMMIT OK");
                 }
             } else {
-                fixAndCommunicateDecisionSimulatingCrash(msg.transactionId, Decision.ABORT);
+                fixDecision(msg.transactionId, Decision.ABORT);
+                sendMessageSimulatingCrash(msg.transactionId,
+                        new DecisionResponse(msg.transactionId, Decision.ABORT),
+                        CRASH_DURING_SEND_DECISION);
                 System.out.println("COORDINATOR " + id + " COMMIT FAIL");
             }
         }
@@ -118,17 +122,14 @@ public class Coordinator extends Node {
         getContext().become(createReceive());
 
         for (Map.Entry<String, TransactionInfo> ongoingTransaction: ongoingTransactions.entrySet()){
-            if (ongoingTransaction.getValue().isTransactionEnded) {
-                String transactionId = ongoingTransaction.getKey();
-                if(!hasDecided(transactionId)) {
-                    fixDecision(transactionId, Decision.ABORT);
-                    sendMessageToClient(ongoingTransaction.getValue().client, new Client.TxnResultMsg(false));
-                }
-
-                Decision decision = decisions.get(transactionId);
-                sendMessageCorrectlyToAllContactedServers(new DecisionResponse(transactionId, decision));
-                ongoingTransactions.remove(transactionId);
+            String transactionId = ongoingTransaction.getKey();
+            if(!hasDecided(transactionId)) {
+                fixDecision(transactionId, Decision.ABORT);
             }
+
+            Decision decision = decisions.get(transactionId);
+            communicateDecisionToClientAndAllContactedServers(transactionId, decision);
+            ongoingTransactions.remove(transactionId);
         }
     }
 
@@ -136,9 +137,7 @@ public class Coordinator extends Node {
         if (!hasDecided(msg.transactionId)) {
             // not decided in time means ABORT
             fixDecision(msg.transactionId, Decision.ABORT);
-            TransactionInfo currentTransactionInfo = ongoingTransactions.get(msg.transactionId);
-            sendMessageToClient(currentTransactionInfo.client, new Client.TxnResultMsg(false));
-            sendMessageCorrectlyToAllContactedServers(new DecisionRequest(msg.transactionId));
+            communicateDecisionToClientAndAllContactedServers(msg.transactionId, Decision.ABORT);
             ongoingTransactions.remove(msg.transactionId);
         }
     }
@@ -159,8 +158,10 @@ public class Coordinator extends Node {
         return servers.get(serverId);
     }
 
-    private void sendMessageToClient(ActorRef client, Serializable msg) {
-        client.tell(msg, getSelf());
+    private void communicateDecisionToClientAndAllContactedServers(String transactionId, Decision decision) {
+        TransactionInfo currentTransactionInfo = ongoingTransactions.get(transactionId);
+        sendMessageCorrectlyToAllContactedServers(new DecisionResponse(transactionId, decision));
+        sendMessageToClient(currentTransactionInfo.client, new Client.TxnResultMsg(decision == Decision.COMMIT));
     }
 
     private void sendMessageCorrectlyToAllContactedServers(Message msg) {
@@ -170,41 +171,36 @@ public class Coordinator extends Node {
         }
     }
 
-    private void sendMessageToFirstContactedServerAndThenCrash(Message msg, int recoverIn) {
-        TransactionInfo currentTransactionInfo = ongoingTransactions.get(msg.transactionId);
-        for(ActorRef server : currentTransactionInfo.contactedServers) {
-            server.tell(msg, getSelf());
-            crash(recoverIn);
-            return;
-        }
+    private void sendMessageToClient(ActorRef client, Serializable msg) {
+        client.tell(msg, getSelf());
     }
 
-    private void fixAndCommunicateDecisionSimulatingCrash(String transactionId, Decision decision) {
-        TransactionInfo currentTransactionInfo = ongoingTransactions.get(transactionId);
-
-        fixDecision(transactionId, decision);
-        sendMessageToClient(currentTransactionInfo.client, new Client.TxnResultMsg(decision == Decision.COMMIT));
-        sendMessageToAllContactedServersSimulatingCrash(
-                new DecisionResponse(transactionId, decision),
-                CRASH_DURING_SEND_DECISION
-        );
-    }
-
-
-
-    private void sendMessageToAllContactedServersSimulatingCrash(Message msg, CrashType crashType) {
+    private void sendMessageSimulatingCrash(String transactionId, Message msg, CrashType crashType) {
         switch (crashType) {
             case NONE:
-                sendMessageCorrectlyToAllContactedServers(msg);
-                ongoingTransactions.remove(msg.transactionId);
+                if (msg instanceof VoteRequest) {
+                    sendMessageCorrectlyToAllContactedServers(msg);
+                } else if (msg instanceof DecisionResponse) {
+                    communicateDecisionToClientAndAllContactedServers(transactionId, ((DecisionResponse) msg).decision);
+                    ongoingTransactions.remove(msg.transactionId);
+                }
                 break;
             case AFTER_FIRST_SEND:
                 sendMessageToFirstContactedServerAndThenCrash(msg, 3000);
                 break;
             case AFTER_ALL_SENDS:
                 sendMessageCorrectlyToAllContactedServers(msg);
-                crash(5000);
+                crash(5000, FAULTY_COORDINATOR_ID);
                 break;
+        }
+    }
+
+    private void sendMessageToFirstContactedServerAndThenCrash(Message msg, int recoverIn) {
+        TransactionInfo currentTransactionInfo = ongoingTransactions.get(msg.transactionId);
+        for(ActorRef server : currentTransactionInfo.contactedServers) {
+            server.tell(msg, getSelf());
+            crash(recoverIn, FAULTY_COORDINATOR_ID);
+            return;
         }
     }
 

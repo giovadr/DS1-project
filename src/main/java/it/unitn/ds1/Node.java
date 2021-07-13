@@ -103,36 +103,24 @@ public abstract class Node extends AbstractActor {
     protected abstract void onRecovery(Recovery msg);
 
     // emulate a crash and a recovery in a given time
-    void crash(int recoverIn) {
-        getContext().become(crashed());
+    void crash(int recoverIn, int faultyActorId) {
+        if (id == faultyActorId) {
+            getContext().become(crashed());
 
-        // setting a timer to "recover"
-        getContext().system().scheduler().scheduleOnce(
-                Duration.create(recoverIn, TimeUnit.MILLISECONDS),
-                getSelf(),
-                new Recovery(), // message sent to myself
-                getContext().system().dispatcher(), getSelf()
-        );
+            // setting a timer to "recover"
+            getContext().system().scheduler().scheduleOnce(
+                    Duration.create(recoverIn, TimeUnit.MILLISECONDS),
+                    getSelf(),
+                    new Recovery(), // message sent to myself
+                    getContext().system().dispatcher(), getSelf()
+            );
+        }
     }
 
 
     // emulate a delay of d milliseconds
     void delay(int d) {
         try {Thread.sleep(d);} catch (Exception ignored) {}
-    }
-
-    void multicast(Serializable m, Set<ActorRef> receivers) {
-        for (ActorRef receiver: receivers)
-            receiver.tell(m, getSelf());
-    }
-
-    // a multicast implementation that crashes after sending the first message
-    void multicastAndCrash(Serializable m, Set<ActorRef> receivers, int recoverIn) {
-        for (ActorRef receiver: receivers) {
-            receiver.tell(m, getSelf());
-            crash(recoverIn);
-            return;
-        }
     }
 
     // schedule a Timeout message in specified time
