@@ -114,7 +114,12 @@ public abstract class Node extends AbstractActor {
                     new Recovery(), // message sent to myself
                     getContext().system().dispatcher(), getSelf()
             );
+            log("CRASH!");
         }
+    }
+
+    void log(String s) {
+        System.out.format("[%s] %s\n", self().path().name(), s);
     }
 
 

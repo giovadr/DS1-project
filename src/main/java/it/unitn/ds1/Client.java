@@ -183,7 +183,7 @@ public class Client extends AbstractActor {
     firstValue = null;
     secondValue = null;
 
-    System.out.println("CLIENT " + clientId + " READ #"+ numOpDone + " (" + firstKey + "), (" + secondKey + ")");
+    System.out.println("CLIENT " + clientId + " READ #"+ numOpDone + " (k:" + firstKey + "), (k:" + secondKey + ")");
   }
 
   // WRITE two items (called with probability WRITE_PROBABILITY after readTwo() values are returned)
@@ -196,8 +196,8 @@ public class Client extends AbstractActor {
     currentCoordinator.tell(new WriteMsg(clientId, secondKey, secondValue + amountTaken), getSelf());
     System.out.println("CLIENT " + clientId + " WRITE #"+ numOpDone
             + " taken " + amountTaken
-            + " (" + firstKey + ", " + (firstValue - amountTaken) + "), ("
-            + secondKey + ", " + (secondValue + amountTaken) + ")");
+            + " (k:" + firstKey + ", v:" + (firstValue - amountTaken) + "), (k:"
+            + secondKey + ", v:" + (secondValue + amountTaken) + ")");
   }
 
   /*-- Message handlers ----------------------------------------------------- */
@@ -224,7 +224,7 @@ public class Client extends AbstractActor {
   }
 
   private void onReadResultMsg(ReadResultMsg msg) {
-    System.out.println("CLIENT " + clientId + " READ RESULT (" + msg.key + ", " + msg.value + ")");
+    System.out.println("CLIENT " + clientId + " READ RESULT (k:" + msg.key + ", v:" + msg.value + ")");
 
     // save the read value(s)
     if(msg.key.equals(firstKey)) firstValue = msg.value;

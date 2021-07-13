@@ -59,7 +59,7 @@ public class Coordinator extends Node {
         ActorRef currentClient = ongoingTransactions.get(msg.transactionId).client;
         sendMessageToClient(currentClient, new Client.ReadResultMsg(msg.key, msg.value));
 
-        System.out.println("COORDINATOR " + id + " SEND READ RESULT (" + msg.key + ", " + msg.value + ") TO " + currentClient.path().name());
+        log("Send read result (k:" + msg.key + ", v:" + msg.value + ") to client");
     }
 
     private void onWriteMsg(Client.WriteMsg msg) {
@@ -70,13 +70,15 @@ public class Coordinator extends Node {
         currentServer.tell(new WriteMsg(transactionId, msg.key, msg.value), getSelf());
         addContactedServer(transactionId, currentServer);
 
-        System.out.println("COORDINATOR " + id + " WRITE (" + msg.key + ", " + msg.value + ")");
+        log("Write (k:" + msg.key + ", v:" + msg.value + ")");
     }
 
     private void onTxnEndMsg(Client.TxnEndMsg msg) {
         ActorRef currentClient = getSender();
         String transactionId = transactionIdForClients.get(currentClient);
         TransactionInfo currentTransactionInfo = ongoingTransactions.get(transactionId);
+
+        log("End of transaction, client voted " + msg.commit);
 
         if (msg.commit) {
             sendMessageSimulatingCrash(transactionId,
@@ -89,8 +91,6 @@ public class Coordinator extends Node {
                     new DecisionResponse(transactionId, Decision.ABORT),
                     CRASH_DURING_SEND_DECISION);
         }
-
-        System.out.println("COORDINATOR " + id + " END");
     }
 
     private void onVoteResponseMsg(VoteResponse msg) {
@@ -105,14 +105,14 @@ public class Coordinator extends Node {
                     sendMessageSimulatingCrash(msg.transactionId,
                             new DecisionResponse(msg.transactionId, Decision.COMMIT),
                             CRASH_DURING_SEND_DECISION);
-                    System.out.println("COORDINATOR " + id + " COMMIT OK");
+                    log("COMMIT: everyone voted yes");
                 }
             } else {
                 fixDecision(msg.transactionId, Decision.ABORT);
                 sendMessageSimulatingCrash(msg.transactionId,
                         new DecisionResponse(msg.transactionId, Decision.ABORT),
                         CRASH_DURING_SEND_DECISION);
-                System.out.println("COORDINATOR " + id + " COMMIT FAIL");
+                log("ABORT: a server voted no");
             }
         }
     }
@@ -121,15 +121,20 @@ public class Coordinator extends Node {
     public void onRecovery(Recovery msg) {
         getContext().become(createReceive());
 
-        for (Map.Entry<String, TransactionInfo> ongoingTransaction: ongoingTransactions.entrySet()){
+        Iterator<Map.Entry<String, TransactionInfo>> it = ongoingTransactions.entrySet().iterator();
+        while (it.hasNext()) {
+            Map.Entry<String, TransactionInfo> ongoingTransaction = it.next();
             String transactionId = ongoingTransaction.getKey();
             if(!hasDecided(transactionId)) {
                 fixDecision(transactionId, Decision.ABORT);
+                log("RECOVERING: not decided yet, aborting transaction " + transactionId + "...");
+            } else {
+                log("RECOVERING: already decided, communicating decision for transaction " + transactionId + "...");
             }
 
             Decision decision = decisions.get(transactionId);
             communicateDecisionToClientAndAllContactedServers(transactionId, decision);
-            ongoingTransactions.remove(transactionId);
+            it.remove();
         }
     }
 
@@ -139,6 +144,7 @@ public class Coordinator extends Node {
             fixDecision(msg.transactionId, Decision.ABORT);
             communicateDecisionToClientAndAllContactedServers(msg.transactionId, Decision.ABORT);
             ongoingTransactions.remove(msg.transactionId);
+            log("TIMEOUT: one or more votes were lost, aborting...");
         }
     }
 

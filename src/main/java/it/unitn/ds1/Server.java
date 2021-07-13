@@ -21,16 +21,12 @@ public class Server extends Node {
         public final DataEntry[] localWorkspace;
         public ActorRef coordinator;
         public Set<ActorRef> contactedServers;
-        public Vote vote;
+        public boolean serverHasVoted;
         public TransactionInfo() {
             this.localWorkspace = new DataEntry[Main.N_KEYS_PER_SERVER];
             this.coordinator = null;
             this.contactedServers = null;
-            this.vote = null;
-        }
-
-        public boolean serverHasNotVoted() {
-            return vote == null;
+            this.serverHasVoted = false;
         }
     }
 
@@ -75,7 +71,7 @@ public class Server extends Node {
 
         currentCoordinator.tell(readResult, getSelf());
 
-        System.out.println("SERVER " + id + " SEND READ RESULT (" + readResult.key + ", " + readResult.value + ") TO COORDINATOR");
+        log("Send read result (k:" + readResult.key + ", v:" + readResult.value + ") to coordinator");
     }
 
     private void onWriteMsg(WriteMsg msg) {
@@ -85,7 +81,7 @@ public class Server extends Node {
         localWorkspace[msg.key % 10].value = msg.value;
         localWorkspace[msg.key % 10].writesCounter++;
 
-        System.out.println("SERVER " + id + " WRITE (" + msg.key + ", " + localWorkspace[msg.key % 10].value + ")");
+        log("Write (k:" + msg.key + ", v:" + localWorkspace[msg.key % 10].value + ")");
     }
 
     private void onVoteRequestMsg(VoteRequest msg) {
@@ -98,53 +94,54 @@ public class Server extends Node {
 
         for (int i = 0; i < Main.N_KEYS_PER_SERVER; i++) {
             if (globalWorkspace[i].readsCounter < 0 || globalWorkspace[i].writesCounter < 0) throw new RuntimeException("LOCKS COUNTERS ARE NEGATIVE!");
-            System.out.println("SERVER " + id + "." + i + " global = " + globalWorkspace[i] + " | local = " + localWorkspace[i]);
+            log("workspace[" + i + "] -> global = " + globalWorkspace[i] + " | local = " + localWorkspace[i]);
             // check that versions are the same, only if there were reads or writes
             if ((localWorkspace[i].readsCounter > 0 || localWorkspace[i].writesCounter > 0) && !localWorkspace[i].version.equals(globalWorkspace[i].version)) {
-                System.out.println("SERVER " + id + " VERSIONS ARE DIFFERENT");
+                log("CANNOT COMMIT: versions are different");
                 canCommit = false;
                 break;
             }
             // if there is a write lock, we cannot read or write
             if (globalWorkspace[i].writesCounter > 0 && (localWorkspace[i].readsCounter > 0 || localWorkspace[i].writesCounter > 0)) {
-                System.out.println("SERVER " + id + " WRITE LOCK (" + globalWorkspace[i].writesCounter + "), " +
-                        "CANNOT READ (" + localWorkspace[i].readsCounter + ") OR WRITE(" + localWorkspace[i].writesCounter + ")");
+                log("CANNOT COMMIT: write lock (" + globalWorkspace[i].writesCounter + "), " +
+                        "cannot read (" + localWorkspace[i].readsCounter + ") or write (" + localWorkspace[i].writesCounter + ")");
                 canCommit = false;
                 break;
             }
             // if there is a read lock, we cannot write
             if (globalWorkspace[i].readsCounter > 0 && localWorkspace[i].writesCounter > 0) {
-                System.out.println("SERVER " + id + " READ LOCK, CANNOT WRITE");
+                log("CANNOT COMMIT: read lock (" + globalWorkspace[i].readsCounter + "), cannot write (" + localWorkspace[i].writesCounter + ")");
                 canCommit = false;
                 break;
             }
         }
-
-        System.out.println("SERVER " + id + " CAN COMMIT? " + canCommit);
+        Vote vote;
 
         // update locks in the global workspace
         if (canCommit) {
-            currentTransactionInfo.vote = Vote.YES;
+            vote = Vote.YES;
 
             for (int i = 0; i < Main.N_KEYS_PER_SERVER; i++) {
                 globalWorkspace[i].readsCounter += localWorkspace[i].readsCounter;
                 globalWorkspace[i].writesCounter += localWorkspace[i].writesCounter;
             }
         } else {
-            currentTransactionInfo.vote = Vote.NO;
+            vote = Vote.NO;
 
             fixDecision(msg.transactionId, Decision.ABORT);
             ongoingTransactions.remove(msg.transactionId);
         }
 
+        currentTransactionInfo.serverHasVoted = true;
+
         ActorRef currentCoordinator = getSender();
-        currentCoordinator.tell(new VoteResponse(msg.transactionId, currentTransactionInfo.vote), getSelf());
+        currentCoordinator.tell(new VoteResponse(msg.transactionId, vote), getSelf());
 
         setTimeout(msg.transactionId, DECISION_TIMEOUT);
 
         if (CRASH_SITUATION == CrashSituation.AFTER_VOTING) { crash(5000, FAULTY_SERVER_ID); return; }
 
-        System.out.println("SERVER " + id + " VOTE " + currentTransactionInfo.vote);
+        log("Can commit? " + canCommit + " -> Vote " + vote);
     }
 
     private void onDecisionResponseMsg(DecisionResponse msg) {
@@ -164,9 +161,7 @@ public class Server extends Node {
                 }
             }
 
-            // TODO: da rivedere (se è il client a votere NO allora questo controllo è necessario, ma allora conviene sostituire
-            //       `currentTransactionInfo.vote` con una variabile booleana tipo `hasVoted`?)
-            if (currentTransactionInfo.vote == Vote.YES) {
+            if (currentTransactionInfo.serverHasVoted) {
                 //remove locks in the global workspace
                 for (int i = 0; i < Main.N_KEYS_PER_SERVER; i++) {
                     globalWorkspace[i].readsCounter -= localWorkspace[i].readsCounter;
@@ -176,7 +171,7 @@ public class Server extends Node {
 
             ongoingTransactions.remove(msg.transactionId);
 
-            System.out.println("SERVER " + id + " FINAL DECISION " + msg.decision);
+            log("Final decision from coordinator: " + msg.decision);
         }
     }
 
@@ -184,23 +179,28 @@ public class Server extends Node {
     public void onRecovery(Recovery msg) {
         getContext().become(createReceive());
 
-        for (Map.Entry<String, TransactionInfo> ongoingTransaction: ongoingTransactions.entrySet()){
+        Iterator<Map.Entry<String, TransactionInfo>> it = ongoingTransactions.entrySet().iterator();
+        while (it.hasNext()) {
+            Map.Entry<String, TransactionInfo> ongoingTransaction = it.next();
             // for sure the decision is not known yet, otherwise the current transaction would have been already removed from `ongoingTransactions`
             String transactionId = ongoingTransaction.getKey();
             TransactionInfo currentTransactionInfo = ongoingTransactions.get(transactionId);
 
-            if (currentTransactionInfo.serverHasNotVoted()) { // "the server has not voted" case
+            if (!currentTransactionInfo.serverHasVoted) { // "the server has not voted" case
                 fixDecision(transactionId, Decision.ABORT);
-                ongoingTransactions.remove(transactionId);
+                it.remove();
+                log("RECOVERING: not voted yet, aborting transaction " + transactionId + "...");
             } else { // the server has voted YES
                 currentTransactionInfo.coordinator.tell(new DecisionRequest(transactionId), getSelf());
                 setTimeout(transactionId, DECISION_TIMEOUT);
+                log("RECOVERING: voted yes, asking to coordinator the decision for transaction " + transactionId + "...");
             }
         }
     }
 
     public void onTimeout(Timeout msg) {
         if (!hasDecided(msg.transactionId)) {  // Termination protocol
+            log("TIMEOUT: decision response not arrived, starting termination protocol...");
             // ask other contacted servers
             sendMessageCorrectlyToAllContactedServers(new DecisionRequest(msg.transactionId));
 
@@ -216,7 +216,7 @@ public class Server extends Node {
         for (int i = 0; i < Main.N_KEYS_PER_SERVER; i++) {
             sum += globalWorkspace[i].value;
         }
-        System.out.println("SERVER " + id + " FINAL SUM " + sum);
+        log("FINAL SUM " + sum);
     }
 
     private void ensureTransactionIsInitialized(String transactionId, ActorRef coordinator) {
