@@ -10,19 +10,28 @@ import java.util.*;
 public class Server extends Node {
     final static int DECISION_TIMEOUT = 2000;  // timeout for the decision, ms
 
+    public enum CrashSituation {NONE, BEFORE_VOTING, AFTER_VOTING}
+    final static CrashSituation CRASH_SITUATION = CrashSituation.NONE;
+
     private final DataEntry[] globalWorkspace = new DataEntry[Main.N_KEYS_PER_SERVER];
     private final Map<String, TransactionInfo> ongoingTransactions = new HashMap<>();
 
     private static class TransactionInfo {
-        DataEntry[] localWorkspace;
-        ActorRef coordinator;
-        Set<ActorRef> contactedServers;
-        Vote vote;
+        public final DataEntry[] localWorkspace;
+        public ActorRef coordinator;
+        public Set<ActorRef> contactedServers;
+        public Vote vote;
+        public boolean isTransactionEnded;
         public TransactionInfo() {
             this.localWorkspace = new DataEntry[Main.N_KEYS_PER_SERVER];
             this.coordinator = null;
             this.contactedServers = null;
             this.vote = null;
+            this.isTransactionEnded = false;
+        }
+
+        public boolean serverHasNotVoted() {
+            return vote == null;
         }
     }
 
@@ -81,9 +90,12 @@ public class Server extends Node {
     }
 
     private void onVoteRequestMsg(VoteRequest msg) {
+        if (CRASH_SITUATION == CrashSituation.BEFORE_VOTING) { crash(5000); return; }
+
         TransactionInfo currentTransactionInfo = ongoingTransactions.get(msg.transactionId);
         DataEntry[] localWorkspace = currentTransactionInfo.localWorkspace;
         currentTransactionInfo.contactedServers = msg.contactedServers;
+        currentTransactionInfo.isTransactionEnded = true;
         boolean canCommit = true;
 
         for (int i = 0; i < Main.N_KEYS_PER_SERVER; i++) {
@@ -112,30 +124,29 @@ public class Server extends Node {
 
         System.out.println("SERVER " + id + " CAN COMMIT? " + canCommit);
 
-        Vote vote;
-
         // update locks in the global workspace
         if (canCommit) {
+            currentTransactionInfo.vote = Vote.YES;
+
             for (int i = 0; i < Main.N_KEYS_PER_SERVER; i++) {
                 globalWorkspace[i].readsCounter += localWorkspace[i].readsCounter;
                 globalWorkspace[i].writesCounter += localWorkspace[i].writesCounter;
             }
-            vote = Vote.YES;
         } else {
-            vote = Vote.NO;
+            currentTransactionInfo.vote = Vote.NO;
 
             fixDecision(msg.transactionId, Decision.ABORT);
             ongoingTransactions.remove(msg.transactionId);
         }
 
-        currentTransactionInfo.vote = vote;
-
         ActorRef currentCoordinator = getSender();
-        currentCoordinator.tell(new VoteResponse(msg.transactionId, vote), getSelf());
+        currentCoordinator.tell(new VoteResponse(msg.transactionId, currentTransactionInfo.vote), getSelf());
 
         setTimeout(msg.transactionId, DECISION_TIMEOUT);
 
-        System.out.println("SERVER " + id + " VOTE " + vote);
+        if (CRASH_SITUATION == CrashSituation.AFTER_VOTING) { crash(5000); return; }
+
+        System.out.println("SERVER " + id + " VOTE " + currentTransactionInfo.vote);
     }
 
     private void onDecisionResponseMsg(DecisionResponse msg) {
@@ -155,6 +166,8 @@ public class Server extends Node {
                 }
             }
 
+            // TODO: da rivedere (se è il client a votere NO allora questo controllo è necessario, ma allora conviene sostituire
+            //       `currentTransactionInfo.vote` con una variabile booleana tipo `hasVoted`?)
             if (currentTransactionInfo.vote == Vote.YES) {
                 //remove locks in the global workspace
                 for (int i = 0; i < Main.N_KEYS_PER_SERVER; i++) {
@@ -171,7 +184,23 @@ public class Server extends Node {
 
     @Override
     public void onRecovery(Recovery msg) {
-        // TODO: gestire i crash del server
+        getContext().become(createReceive());
+
+        for (Map.Entry<String, TransactionInfo> ongoingTransaction: ongoingTransactions.entrySet()){
+            // for sure the decision is not known yet, otherwise the current transaction would have been already removed from `ongoingTransactions`
+            if (ongoingTransaction.getValue().isTransactionEnded) {
+                String transactionId = ongoingTransaction.getKey();
+                TransactionInfo currentTransactionInfo = ongoingTransactions.get(transactionId);
+
+                if (currentTransactionInfo.serverHasNotVoted()) { // "the server has not voted" case
+                    fixDecision(transactionId, Decision.ABORT);
+                    ongoingTransactions.remove(transactionId);
+                } else { // the server has voted YES
+                    currentTransactionInfo.coordinator.tell(new DecisionRequest(transactionId), getSelf());
+                    setTimeout(transactionId, DECISION_TIMEOUT);
+                }
+            }
+        }
     }
 
     public void onTimeout(Timeout msg) {

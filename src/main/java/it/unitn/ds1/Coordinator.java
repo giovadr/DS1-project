@@ -6,6 +6,8 @@ import java.io.Serializable;
 import java.util.*;
 
 public class Coordinator extends Node {
+    final static int VOTE_TIMEOUT = 1000;
+
     public enum CrashType {NONE, AFTER_FIRST_SEND, AFTER_ALL_SENDS}
     final static CrashType CRASH_DURING_VOTE_REQUEST = CrashType.NONE;
     final static CrashType CRASH_DURING_SEND_DECISION = CrashType.NONE;
@@ -84,7 +86,7 @@ public class Coordinator extends Node {
                     new VoteRequest(transactionId, currentTransactionInfo.contactedServers),
                     CRASH_DURING_VOTE_REQUEST
             );
-            // TODO: impostare il timeout
+            setTimeout(transactionId, VOTE_TIMEOUT);
         } else {
             // TODO: bisogna simulare i crash qui? Chiedere all'esercitatore
             fixAndCommunicateDecisionSimulatingCrash(transactionId, Decision.ABORT);
@@ -127,6 +129,17 @@ public class Coordinator extends Node {
                 sendMessageCorrectlyToAllContactedServers(new DecisionResponse(transactionId, decision));
                 ongoingTransactions.remove(transactionId);
             }
+        }
+    }
+
+    public void onTimeout(Timeout msg) {
+        if (!hasDecided(msg.transactionId)) {
+            // not decided in time means ABORT
+            fixDecision(msg.transactionId, Decision.ABORT);
+            TransactionInfo currentTransactionInfo = ongoingTransactions.get(msg.transactionId);
+            sendMessageToClient(currentTransactionInfo.client, new Client.TxnResultMsg(false));
+            sendMessageCorrectlyToAllContactedServers(new DecisionRequest(msg.transactionId));
+            ongoingTransactions.remove(msg.transactionId);
         }
     }
 
@@ -205,6 +218,7 @@ public class Coordinator extends Node {
                 .match(Client.WriteMsg.class, this::onWriteMsg)
                 .match(Client.TxnEndMsg.class, this::onTxnEndMsg)
                 .match(VoteResponse.class, this::onVoteResponseMsg)
+                .match(Timeout.class, this::onTimeout)
                 .match(DecisionRequest.class, this::onDecisionRequest)
                 .build();
     }
