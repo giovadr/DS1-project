@@ -11,7 +11,7 @@ public class Coordinator extends Node {
 
     private enum CrashType {NONE, BEFORE_ANY_SEND, AFTER_FIRST_SEND, AFTER_ALL_SENDS}
     private final static CrashType CRASH_DURING_VOTE_REQUEST = CrashType.NONE;
-    private final static CrashType CRASH_DURING_SEND_DECISION = CrashType.BEFORE_ANY_SEND;
+    private final static CrashType CRASH_DURING_SEND_DECISION = CrashType.NONE;
 
     private Integer transactionsCounter;
     private final Map<String, TransactionInfo> ongoingTransactions = new HashMap<>();
@@ -77,7 +77,6 @@ public class Coordinator extends Node {
     private void onTxnEndMsg(Client.TxnEndMsg msg) {
         ActorRef currentClient = getSender();
         String transactionId = transactionIdForClients.get(currentClient);
-        TransactionInfo currentTransactionInfo = ongoingTransactions.get(transactionId);
 
         log(transactionId, "End of transaction, client voted " + msg.commit);
 

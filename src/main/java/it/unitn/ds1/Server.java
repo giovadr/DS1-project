@@ -13,7 +13,7 @@ public class Server extends Node {
     private final static int FAULTY_SERVER_ID = 0;
 
     private enum CrashSituation {NONE, BEFORE_VOTING, AFTER_VOTING}
-    private final static CrashSituation CRASH_SITUATION = CrashSituation.AFTER_VOTING;
+    private final static CrashSituation CRASH_SITUATION = CrashSituation.NONE;
 
     private final DataEntry[] globalWorkspace = new DataEntry[Main.N_KEYS_PER_SERVER];
     private final Map<String, TransactionInfo> ongoingTransactions = new HashMap<>();
