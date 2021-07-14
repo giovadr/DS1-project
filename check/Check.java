@@ -15,10 +15,10 @@ public class Check {
 
             while((line = reader.readLine()) != null) {
                 String[] l = line.split(" ");
-                if(l.length < 5) continue;
+                if(l.length < 4) continue;
                 //System.out.println(Arrays.toString(l));
-                if (l[3].equals("SUM")) {
-                    localSum = Integer.parseInt(l[4]);
+                if (l[2].equals("SUM")) {
+                    localSum = Integer.parseInt(l[3]);
 
                     totalSum += localSum;
                 }

@@ -6,13 +6,14 @@ import akka.actor.Props;
 
 import java.io.Serializable;
 import java.util.*;
+import java.util.stream.Collectors;
 
 public class Server extends Node {
-    final static int DECISION_TIMEOUT = 2000;  // timeout for the decision, ms
-    final static int FAULTY_SERVER_ID = 0;
+    private final static int DECISION_TIMEOUT = 2000;  // timeout for the decision, ms
+    private final static int FAULTY_SERVER_ID = 0;
 
-    public enum CrashSituation {NONE, BEFORE_VOTING, AFTER_VOTING}
-    final static CrashSituation CRASH_SITUATION = CrashSituation.NONE;
+    private enum CrashSituation {NONE, BEFORE_VOTING, AFTER_VOTING}
+    private final static CrashSituation CRASH_SITUATION = CrashSituation.AFTER_VOTING;
 
     private final DataEntry[] globalWorkspace = new DataEntry[Main.N_KEYS_PER_SERVER];
     private final Map<String, TransactionInfo> ongoingTransactions = new HashMap<>();
@@ -30,7 +31,7 @@ public class Server extends Node {
         }
     }
 
-    public static class DataEntry {
+    private static class DataEntry {
         public Integer version;
         public Integer value;
         public Integer readsCounter;
@@ -71,7 +72,7 @@ public class Server extends Node {
 
         currentCoordinator.tell(readResult, getSelf());
 
-        log("Send read result (k:" + readResult.key + ", v:" + readResult.value + ") to coordinator");
+        log(msg.transactionId, "Send read result (k:" + readResult.key + ", v:" + readResult.value + ") to coordinator");
     }
 
     private void onWriteMsg(WriteMsg msg) {
@@ -81,67 +82,72 @@ public class Server extends Node {
         localWorkspace[msg.key % 10].value = msg.value;
         localWorkspace[msg.key % 10].writesCounter++;
 
-        log("Write (k:" + msg.key + ", v:" + localWorkspace[msg.key % 10].value + ")");
+        log(msg.transactionId, "Write (k:" + msg.key + ", v:" + localWorkspace[msg.key % 10].value + ")");
     }
 
     private void onVoteRequestMsg(VoteRequest msg) {
-        if (CRASH_SITUATION == CrashSituation.BEFORE_VOTING) { crash(5000, FAULTY_SERVER_ID); return; }
+        if (ongoingTransactions.containsKey(msg.transactionId)) {
+            if (CRASH_SITUATION == CrashSituation.BEFORE_VOTING && id == FAULTY_SERVER_ID) { crash(5000); return; }
 
-        TransactionInfo currentTransactionInfo = ongoingTransactions.get(msg.transactionId);
-        DataEntry[] localWorkspace = currentTransactionInfo.localWorkspace;
-        currentTransactionInfo.contactedServers = msg.contactedServers;
-        boolean canCommit = true;
-
-        for (int i = 0; i < Main.N_KEYS_PER_SERVER; i++) {
-            if (globalWorkspace[i].readsCounter < 0 || globalWorkspace[i].writesCounter < 0) throw new RuntimeException("LOCKS COUNTERS ARE NEGATIVE!");
-            log("workspace[" + i + "] -> global = " + globalWorkspace[i] + " | local = " + localWorkspace[i]);
-            // check that versions are the same, only if there were reads or writes
-            if ((localWorkspace[i].readsCounter > 0 || localWorkspace[i].writesCounter > 0) && !localWorkspace[i].version.equals(globalWorkspace[i].version)) {
-                log("CANNOT COMMIT: versions are different");
-                canCommit = false;
-                break;
-            }
-            // if there is a write lock, we cannot read or write
-            if (globalWorkspace[i].writesCounter > 0 && (localWorkspace[i].readsCounter > 0 || localWorkspace[i].writesCounter > 0)) {
-                log("CANNOT COMMIT: write lock (" + globalWorkspace[i].writesCounter + "), " +
-                        "cannot read (" + localWorkspace[i].readsCounter + ") or write (" + localWorkspace[i].writesCounter + ")");
-                canCommit = false;
-                break;
-            }
-            // if there is a read lock, we cannot write
-            if (globalWorkspace[i].readsCounter > 0 && localWorkspace[i].writesCounter > 0) {
-                log("CANNOT COMMIT: read lock (" + globalWorkspace[i].readsCounter + "), cannot write (" + localWorkspace[i].writesCounter + ")");
-                canCommit = false;
-                break;
-            }
-        }
-        Vote vote;
-
-        // update locks in the global workspace
-        if (canCommit) {
-            vote = Vote.YES;
+            TransactionInfo currentTransactionInfo = ongoingTransactions.get(msg.transactionId);
+            DataEntry[] localWorkspace = currentTransactionInfo.localWorkspace;
+            // copying all participant refs except for self
+            currentTransactionInfo.contactedServers = msg.contactedServers.stream()
+                    .filter((contactedServer) -> !contactedServer.equals(getSelf()))
+                    .collect(Collectors.toSet());
+            boolean canCommit = true;
 
             for (int i = 0; i < Main.N_KEYS_PER_SERVER; i++) {
-                globalWorkspace[i].readsCounter += localWorkspace[i].readsCounter;
-                globalWorkspace[i].writesCounter += localWorkspace[i].writesCounter;
+                if (globalWorkspace[i].readsCounter < 0 || globalWorkspace[i].writesCounter < 0) throw new RuntimeException("LOCKS COUNTERS ARE NEGATIVE!");
+                log(msg.transactionId, "workspace[" + i + "] -> global = " + globalWorkspace[i] + " | local = " + localWorkspace[i]);
+                // check that versions are the same, only if there were reads or writes
+                if ((localWorkspace[i].readsCounter > 0 || localWorkspace[i].writesCounter > 0) && !localWorkspace[i].version.equals(globalWorkspace[i].version)) {
+                    log(msg.transactionId, "CANNOT COMMIT: versions are different");
+                    canCommit = false;
+                    break;
+                }
+                // if there is a write lock, we cannot read or write
+                if (globalWorkspace[i].writesCounter > 0 && (localWorkspace[i].readsCounter > 0 || localWorkspace[i].writesCounter > 0)) {
+                    log(msg.transactionId, "CANNOT COMMIT: write lock (" + globalWorkspace[i].writesCounter + "), " +
+                            "cannot read (" + localWorkspace[i].readsCounter + ") or write (" + localWorkspace[i].writesCounter + ")");
+                    canCommit = false;
+                    break;
+                }
+                // if there is a read lock, we cannot write
+                if (globalWorkspace[i].readsCounter > 0 && localWorkspace[i].writesCounter > 0) {
+                    log(msg.transactionId, "CANNOT COMMIT: read lock (" + globalWorkspace[i].readsCounter + "), cannot write (" + localWorkspace[i].writesCounter + ")");
+                    canCommit = false;
+                    break;
+                }
             }
-        } else {
-            vote = Vote.NO;
+            Vote vote;
 
-            fixDecision(msg.transactionId, Decision.ABORT);
-            ongoingTransactions.remove(msg.transactionId);
+            // update locks in the global workspace
+            if (canCommit) {
+                vote = Vote.YES;
+
+                for (int i = 0; i < Main.N_KEYS_PER_SERVER; i++) {
+                    globalWorkspace[i].readsCounter += localWorkspace[i].readsCounter;
+                    globalWorkspace[i].writesCounter += localWorkspace[i].writesCounter;
+                }
+            } else {
+                vote = Vote.NO;
+
+                fixDecision(msg.transactionId, Decision.ABORT);
+                ongoingTransactions.remove(msg.transactionId);
+            }
+
+            currentTransactionInfo.serverHasVoted = true;
+
+            ActorRef currentCoordinator = getSender();
+            currentCoordinator.tell(new VoteResponse(msg.transactionId, vote), getSelf());
+
+            setTimeout(msg.transactionId, DECISION_TIMEOUT);
+
+            log(msg.transactionId, "Can commit? " + canCommit + " -> Vote " + vote);
+
+            if (CRASH_SITUATION == CrashSituation.AFTER_VOTING && id == FAULTY_SERVER_ID) { crash(5000); return; }
         }
-
-        currentTransactionInfo.serverHasVoted = true;
-
-        ActorRef currentCoordinator = getSender();
-        currentCoordinator.tell(new VoteResponse(msg.transactionId, vote), getSelf());
-
-        setTimeout(msg.transactionId, DECISION_TIMEOUT);
-
-        if (CRASH_SITUATION == CrashSituation.AFTER_VOTING) { crash(5000, FAULTY_SERVER_ID); return; }
-
-        log("Can commit? " + canCommit + " -> Vote " + vote);
     }
 
     private void onDecisionResponseMsg(DecisionResponse msg) {
@@ -171,12 +177,12 @@ public class Server extends Node {
 
             ongoingTransactions.remove(msg.transactionId);
 
-            log("Final decision from coordinator: " + msg.decision);
+            log(msg.transactionId, "Final decision from " + getActorName(getSender()) + ": " + msg.decision);
         }
     }
 
     @Override
-    public void onRecovery(Recovery msg) {
+    protected void onRecovery(Recovery msg) {
         getContext().become(createReceive());
 
         Iterator<Map.Entry<String, TransactionInfo>> it = ongoingTransactions.entrySet().iterator();
@@ -189,18 +195,18 @@ public class Server extends Node {
             if (!currentTransactionInfo.serverHasVoted) { // "the server has not voted" case
                 fixDecision(transactionId, Decision.ABORT);
                 it.remove();
-                log("RECOVERING: not voted yet, aborting transaction " + transactionId + "...");
+                log(transactionId, "RECOVERING: not voted yet, aborting transaction");
             } else { // the server has voted YES
                 currentTransactionInfo.coordinator.tell(new DecisionRequest(transactionId), getSelf());
                 setTimeout(transactionId, DECISION_TIMEOUT);
-                log("RECOVERING: voted yes, asking to coordinator the decision for transaction " + transactionId + "...");
+                log(transactionId, "RECOVERING: voted yes, asking coordinator the decision for transaction");
             }
         }
     }
 
-    public void onTimeout(Timeout msg) {
+    private void onTimeout(Timeout msg) {
         if (!hasDecided(msg.transactionId)) {  // Termination protocol
-            log("TIMEOUT: decision response not arrived, starting termination protocol...");
+            log(msg.transactionId, "TIMEOUT: decision response not arrived, starting termination protocol...");
             // ask other contacted servers
             sendMessageToContactedServersCorrectly(new DecisionRequest(msg.transactionId));
 
@@ -248,6 +254,15 @@ public class Server extends Node {
                 .match(LogRequestMsg.class, this::onLogRequestMsg)
                 .match(Timeout.class, this::onTimeout)
                 .match(DecisionRequest.class, this::onDecisionRequest)
+                .build();
+    }
+
+    @Override
+    protected Receive crashed() {
+        return receiveBuilder()
+                .match(LogRequestMsg.class, this::onLogRequestMsg)
+                .match(Recovery.class, this::onRecovery)
+                .matchAny(msg -> {})
                 .build();
     }
 }

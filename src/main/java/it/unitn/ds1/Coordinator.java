@@ -6,12 +6,12 @@ import java.io.Serializable;
 import java.util.*;
 
 public class Coordinator extends Node {
-    final static int VOTE_TIMEOUT = 1000;
-    final static int FAULTY_COORDINATOR_ID = 0;
+    private final static int VOTE_TIMEOUT = 1000;
+    private final static int FAULTY_COORDINATOR_ID = 0;
 
-    public enum CrashType {NONE, AFTER_FIRST_SEND, AFTER_ALL_SENDS}
-    final static CrashType CRASH_DURING_VOTE_REQUEST = CrashType.NONE;
-    final static CrashType CRASH_DURING_SEND_DECISION = CrashType.NONE;
+    private enum CrashType {NONE, BEFORE_ANY_SEND, AFTER_FIRST_SEND, AFTER_ALL_SENDS}
+    private final static CrashType CRASH_DURING_VOTE_REQUEST = CrashType.NONE;
+    private final static CrashType CRASH_DURING_SEND_DECISION = CrashType.BEFORE_ANY_SEND;
 
     private Integer transactionsCounter;
     private final Map<String, TransactionInfo> ongoingTransactions = new HashMap<>();
@@ -53,13 +53,14 @@ public class Coordinator extends Node {
         ActorRef currentServer = getServerFromKey(msg.key);
         currentServer.tell(new ReadMsg(transactionId, msg.key), getSelf());
         addContactedServer(transactionId, currentServer);
+        setTimeout(transactionId, VOTE_TIMEOUT);
     }
 
     private void onReadResultMsg(ReadResultMsg msg) {
         ActorRef currentClient = ongoingTransactions.get(msg.transactionId).client;
         sendMessageToClient(currentClient, new Client.ReadResultMsg(msg.key, msg.value));
 
-        log("Send read result (k:" + msg.key + ", v:" + msg.value + ") to client");
+        log(msg.transactionId, "Send read result (k:" + msg.key + ", v:" + msg.value + ") to client");
     }
 
     private void onWriteMsg(Client.WriteMsg msg) {
@@ -70,7 +71,7 @@ public class Coordinator extends Node {
         currentServer.tell(new WriteMsg(transactionId, msg.key, msg.value), getSelf());
         addContactedServer(transactionId, currentServer);
 
-        log("Write (k:" + msg.key + ", v:" + msg.value + ")");
+        log(transactionId, "Write (k:" + msg.key + ", v:" + msg.value + ")");
     }
 
     private void onTxnEndMsg(Client.TxnEndMsg msg) {
@@ -78,7 +79,7 @@ public class Coordinator extends Node {
         String transactionId = transactionIdForClients.get(currentClient);
         TransactionInfo currentTransactionInfo = ongoingTransactions.get(transactionId);
 
-        log("End of transaction, client voted " + msg.commit);
+        log(transactionId, "End of transaction, client voted " + msg.commit);
 
         if (msg.commit) {
             sendVoteRequestToContactedServersSimulatingCrash(transactionId);
@@ -97,20 +98,20 @@ public class Coordinator extends Node {
                 currentTransactionInfo.nYesVotes++;
 
                 if (currentTransactionInfo.everyoneVotedYes()) {
+                    log(msg.transactionId, "COMMIT: everyone voted yes");
                     fixDecision(msg.transactionId, Decision.COMMIT);
                     sendDecisionToClientAndContactedServersSimulatingCrash(msg.transactionId);
-                    log("COMMIT: everyone voted yes");
                 }
             } else {
+                log(msg.transactionId, "ABORT: a server voted no");
                 fixDecision(msg.transactionId, Decision.ABORT);
                 sendDecisionToClientAndContactedServersSimulatingCrash(msg.transactionId);
-                log("ABORT: a server voted no");
             }
         }
     }
 
     @Override
-    public void onRecovery(Recovery msg) {
+    protected void onRecovery(Recovery msg) {
         getContext().become(createReceive());
 
         // the following copy is needed to avoid `ConcurrentModificationException`, since we modify the map while iterating it
@@ -120,21 +121,21 @@ public class Coordinator extends Node {
             String transactionId = ongoingTransaction.getKey();
             if(!hasDecided(transactionId)) {
                 fixDecision(transactionId, Decision.ABORT);
-                log("RECOVERING: not decided yet, aborting transaction " + transactionId + "...");
+                log(transactionId, "RECOVERING: not decided yet, aborting...");
             } else {
-                log("RECOVERING: already decided, communicating decision for transaction " + transactionId + "...");
+                log(transactionId, "RECOVERING: already decided, communicating decision to others...");
             }
 
             sendDecisionToClientAndContactedServersCorrectly(transactionId);
         }
     }
 
-    public void onTimeout(Timeout msg) {
+    private void onTimeout(Timeout msg) {
         if (!hasDecided(msg.transactionId)) {
             // not decided in time means ABORT
             fixDecision(msg.transactionId, Decision.ABORT);
             sendDecisionToClientAndContactedServersCorrectly(msg.transactionId);
-            log("TIMEOUT: one or more votes were lost, aborting...");
+            log(msg.transactionId, "TIMEOUT: one or more messages were lost, aborting...");
         }
     }
 
@@ -189,17 +190,22 @@ public class Coordinator extends Node {
     private void sendMessageToContactedServersSimulatingCrash(Message msg, CrashType crashType) {
         TransactionInfo currentTransactionInfo = ongoingTransactions.get(msg.transactionId);
 
+        if (crashType == CrashType.BEFORE_ANY_SEND && id == FAULTY_COORDINATOR_ID) {
+            crash(5000);
+            return;
+        }
+
         for(ActorRef server : currentTransactionInfo.contactedServers) {
             server.tell(msg, getSelf());
 
-            if (crashType == CrashType.AFTER_FIRST_SEND) {
-                crash(3000, FAULTY_COORDINATOR_ID);
+            if (crashType == CrashType.AFTER_FIRST_SEND && id == FAULTY_COORDINATOR_ID) {
+                crash(3000);
                 return;
             }
         }
 
-        if (crashType == CrashType.AFTER_ALL_SENDS) {
-            crash(5000, FAULTY_COORDINATOR_ID);
+        if (crashType == CrashType.AFTER_ALL_SENDS && id == FAULTY_COORDINATOR_ID) {
+            crash(5000);
         }
     }
 
@@ -215,6 +221,14 @@ public class Coordinator extends Node {
                 .match(VoteResponse.class, this::onVoteResponseMsg)
                 .match(Timeout.class, this::onTimeout)
                 .match(DecisionRequest.class, this::onDecisionRequest)
+                .build();
+    }
+
+    @Override
+    protected Receive crashed() {
+        return receiveBuilder()
+                .match(Recovery.class, this::onRecovery)
+                .matchAny(msg -> {})
                 .build();
     }
 }

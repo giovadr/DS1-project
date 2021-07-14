@@ -18,14 +18,14 @@ public abstract class Node extends AbstractActor {
         this.id = id;
     }
 
-    public static class WelcomeMsg implements Serializable {
+    protected static class WelcomeMsg implements Serializable {
         public final List<ActorRef> servers;
         public WelcomeMsg(List<ActorRef> servers) {
             this.servers = Collections.unmodifiableList(new ArrayList<>(servers));
         }
     }
 
-    public static class ReadMsg extends Message {
+    protected static class ReadMsg extends Message {
         public final Integer key; // the key of the value to read
         public ReadMsg(String transactionId, int key) {
             super(transactionId);
@@ -33,7 +33,7 @@ public abstract class Node extends AbstractActor {
         }
     }
 
-    public static class ReadResultMsg extends Message {
+    protected static class ReadResultMsg extends Message {
         public final Integer key; // the key associated to the requested item
         public final Integer value; // the value found in the data store for that item
         public ReadResultMsg(String transactionId, int key, int value) {
@@ -43,7 +43,7 @@ public abstract class Node extends AbstractActor {
         }
     }
 
-    public static class WriteMsg extends Message {
+    protected static class WriteMsg extends Message {
         public final Integer key; // the key of the value to write
         public final Integer value; // the new value to write
         public WriteMsg(String transactionId, int key, int value) {
@@ -53,10 +53,10 @@ public abstract class Node extends AbstractActor {
         }
     }
 
-    public enum Vote {NO, YES}
-    public enum Decision {ABORT, COMMIT}
+    protected enum Vote {NO, YES}
+    protected enum Decision {ABORT, COMMIT}
 
-    public static class VoteRequest extends Message {
+    protected static class VoteRequest extends Message {
         public final Set<ActorRef> contactedServers;
         public VoteRequest(String transactionId, Set<ActorRef> contactedServers) {
             super(transactionId);
@@ -64,7 +64,7 @@ public abstract class Node extends AbstractActor {
         }
     }
 
-    public static class VoteResponse extends Message {
+    protected static class VoteResponse extends Message {
         public final Vote vote;
         public VoteResponse(String transactionId, Vote v) {
             super(transactionId);
@@ -72,13 +72,13 @@ public abstract class Node extends AbstractActor {
         }
     }
 
-    public static class DecisionRequest extends Message {
+    protected static class DecisionRequest extends Message {
         public DecisionRequest(String transactionId) {
             super(transactionId);
         }
     }
 
-    public static class DecisionResponse extends Message {
+    protected static class DecisionResponse extends Message {
         public final Decision decision;
         public DecisionResponse(String transactionId, Decision d) {
             super(transactionId);
@@ -86,13 +86,13 @@ public abstract class Node extends AbstractActor {
         }
     }
 
-    public static class Timeout extends Message {
+    protected static class Timeout extends Message {
         public Timeout(String transactionId) {
             super(transactionId);
         }
     }
 
-    public static class Recovery implements Serializable {}
+    protected static class Recovery implements Serializable {}
 
     protected void onWelcomeMsg(WelcomeMsg msg) {
         this.servers = msg.servers;
@@ -103,25 +103,33 @@ public abstract class Node extends AbstractActor {
     protected abstract void onRecovery(Recovery msg);
 
     // emulate a crash and a recovery in a given time
-    void crash(int recoverIn, int faultyActorId) {
-        if (id == faultyActorId) {
-            getContext().become(crashed());
+    void crash(int recoverIn) {
+        getContext().become(crashed());
 
-            // setting a timer to "recover"
-            getContext().system().scheduler().scheduleOnce(
-                    Duration.create(recoverIn, TimeUnit.MILLISECONDS),
-                    getSelf(),
-                    new Recovery(), // message sent to myself
-                    getContext().system().dispatcher(), getSelf()
-            );
-            log("CRASH!");
-        }
+        // setting a timer to "recover"
+        getContext().system().scheduler().scheduleOnce(
+                Duration.create(recoverIn, TimeUnit.MILLISECONDS),
+                getSelf(),
+                new Recovery(), // message sent to myself
+                getContext().system().dispatcher(), getSelf()
+        );
+        log("CRASH!");
     }
 
     void log(String s) {
-        System.out.format("[%s] %s\n", self().path().name(), s);
+        log("", s);
     }
 
+    void log(String transactionId, String s) {
+        if (!transactionId.isEmpty()) {
+            transactionId = "[T#" + transactionId + "] ";
+        }
+        System.out.format("%s[%s] %s\n", transactionId, getActorName(self()), s);
+    }
+
+    String getActorName(ActorRef actor) {
+        return actor.path().name();
+    }
 
     // emulate a delay of d milliseconds
     void delay(int d) {
@@ -149,18 +157,15 @@ public abstract class Node extends AbstractActor {
         return decisions.containsKey(transactionId);
     }
 
-    public Receive crashed() {
-        return receiveBuilder()
-                // TODO: add handlers for reads and writes
-                .match(Recovery.class, this::onRecovery)
-                .matchAny(msg -> {})
-                .build();
-    }
+    protected abstract Receive crashed();
 
-    public void onDecisionRequest(DecisionRequest msg) {
-        if (hasDecided(msg.transactionId))
+    protected void onDecisionRequest(DecisionRequest msg) {
+        if (hasDecided(msg.transactionId)) {
             getSender().tell(new DecisionResponse(msg.transactionId, decisions.get(msg.transactionId)), getSelf());
-
-        // just ignoring if we don't know the decision
+            log(msg.transactionId, "Incoming decision request: decision known -> " + decisions.get(msg.transactionId));
+        } else {
+            // just ignoring if we don't know the decision
+            log(msg.transactionId, "Incoming decision request: decision unknown");
+        }
     }
 }

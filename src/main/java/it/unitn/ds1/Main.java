@@ -65,8 +65,8 @@ public class Main {
       server.tell(stopMsg, null);
     }
 
-    // wait for all messages to flush
-    try { Thread.sleep(2000); }
+    // wait for all messages to flush and for all crashes to recover
+    try { Thread.sleep(6000); }
     catch (InterruptedException e) { e.printStackTrace(); }
 
     // send requests to servers to log the sum of their values
@@ -76,7 +76,7 @@ public class Main {
     }
 
     // wait for all servers to log the sum of their values
-    try { Thread.sleep(2000); }
+    try { Thread.sleep(1000); }
     catch (InterruptedException e) { e.printStackTrace(); }
 
     system.terminate();
