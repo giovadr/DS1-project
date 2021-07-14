@@ -81,15 +81,11 @@ public class Coordinator extends Node {
         log("End of transaction, client voted " + msg.commit);
 
         if (msg.commit) {
-            sendMessageSimulatingCrash(transactionId,
-                    new VoteRequest(transactionId, currentTransactionInfo.contactedServers),
-                    CRASH_DURING_VOTE_REQUEST);
+            sendVoteRequestToContactedServersSimulatingCrash(transactionId);
             setTimeout(transactionId, VOTE_TIMEOUT);
         } else {
             fixDecision(transactionId, Decision.ABORT);
-            sendMessageSimulatingCrash(transactionId,
-                    new DecisionResponse(transactionId, Decision.ABORT),
-                    CRASH_DURING_SEND_DECISION);
+            sendDecisionToClientAndContactedServersSimulatingCrash(transactionId);
         }
     }
 
@@ -102,16 +98,12 @@ public class Coordinator extends Node {
 
                 if (currentTransactionInfo.everyoneVotedYes()) {
                     fixDecision(msg.transactionId, Decision.COMMIT);
-                    sendMessageSimulatingCrash(msg.transactionId,
-                            new DecisionResponse(msg.transactionId, Decision.COMMIT),
-                            CRASH_DURING_SEND_DECISION);
+                    sendDecisionToClientAndContactedServersSimulatingCrash(msg.transactionId);
                     log("COMMIT: everyone voted yes");
                 }
             } else {
                 fixDecision(msg.transactionId, Decision.ABORT);
-                sendMessageSimulatingCrash(msg.transactionId,
-                        new DecisionResponse(msg.transactionId, Decision.ABORT),
-                        CRASH_DURING_SEND_DECISION);
+                sendDecisionToClientAndContactedServersSimulatingCrash(msg.transactionId);
                 log("ABORT: a server voted no");
             }
         }
@@ -121,9 +113,10 @@ public class Coordinator extends Node {
     public void onRecovery(Recovery msg) {
         getContext().become(createReceive());
 
-        Iterator<Map.Entry<String, TransactionInfo>> it = ongoingTransactions.entrySet().iterator();
-        while (it.hasNext()) {
-            Map.Entry<String, TransactionInfo> ongoingTransaction = it.next();
+        // the following copy is needed to avoid `ConcurrentModificationException`, since we modify the map while iterating it
+        Map<String, TransactionInfo> ongoingTransactionsCopy = new HashMap<>(ongoingTransactions);
+
+        for (Map.Entry<String, TransactionInfo> ongoingTransaction: ongoingTransactionsCopy.entrySet()){
             String transactionId = ongoingTransaction.getKey();
             if(!hasDecided(transactionId)) {
                 fixDecision(transactionId, Decision.ABORT);
@@ -132,9 +125,7 @@ public class Coordinator extends Node {
                 log("RECOVERING: already decided, communicating decision for transaction " + transactionId + "...");
             }
 
-            Decision decision = decisions.get(transactionId);
-            communicateDecisionToClientAndAllContactedServers(transactionId, decision);
-            it.remove();
+            sendDecisionToClientAndContactedServersCorrectly(transactionId);
         }
     }
 
@@ -142,8 +133,7 @@ public class Coordinator extends Node {
         if (!hasDecided(msg.transactionId)) {
             // not decided in time means ABORT
             fixDecision(msg.transactionId, Decision.ABORT);
-            communicateDecisionToClientAndAllContactedServers(msg.transactionId, Decision.ABORT);
-            ongoingTransactions.remove(msg.transactionId);
+            sendDecisionToClientAndContactedServersCorrectly(msg.transactionId);
             log("TIMEOUT: one or more votes were lost, aborting...");
         }
     }
@@ -164,49 +154,52 @@ public class Coordinator extends Node {
         return servers.get(serverId);
     }
 
-    private void communicateDecisionToClientAndAllContactedServers(String transactionId, Decision decision) {
-        TransactionInfo currentTransactionInfo = ongoingTransactions.get(transactionId);
-        sendMessageCorrectlyToAllContactedServers(new DecisionResponse(transactionId, decision));
-        sendMessageToClient(currentTransactionInfo.client, new Client.TxnResultMsg(decision == Decision.COMMIT));
-    }
-
-    private void sendMessageCorrectlyToAllContactedServers(Message msg) {
-        TransactionInfo currentTransactionInfo = ongoingTransactions.get(msg.transactionId);
-        for(ActorRef server : currentTransactionInfo.contactedServers) {
-            server.tell(msg, getSelf());
-        }
-    }
-
     private void sendMessageToClient(ActorRef client, Serializable msg) {
         client.tell(msg, getSelf());
     }
 
-    private void sendMessageSimulatingCrash(String transactionId, Message msg, CrashType crashType) {
-        switch (crashType) {
-            case NONE:
-                if (msg instanceof VoteRequest) {
-                    sendMessageCorrectlyToAllContactedServers(msg);
-                } else if (msg instanceof DecisionResponse) {
-                    communicateDecisionToClientAndAllContactedServers(transactionId, ((DecisionResponse) msg).decision);
-                    ongoingTransactions.remove(msg.transactionId);
-                }
-                break;
-            case AFTER_FIRST_SEND:
-                sendMessageToFirstContactedServerAndThenCrash(msg, 3000);
-                break;
-            case AFTER_ALL_SENDS:
-                sendMessageCorrectlyToAllContactedServers(msg);
-                crash(5000, FAULTY_COORDINATOR_ID);
-                break;
+    private void sendVoteRequestToContactedServersSimulatingCrash(String transactionId) {
+        TransactionInfo currentTransactionInfo = ongoingTransactions.get(transactionId);
+        Message msg = new VoteRequest(transactionId, currentTransactionInfo.contactedServers);
+
+        sendMessageToContactedServersSimulatingCrash(msg, CRASH_DURING_VOTE_REQUEST);
+    }
+
+    private void sendDecisionToClientAndContactedServersCorrectly(String transactionId) {
+        sendDecisionToClientAndContactedServersSimulatingCrash(transactionId, CrashType.NONE);
+    }
+
+    private void sendDecisionToClientAndContactedServersSimulatingCrash(String transactionId) {
+        sendDecisionToClientAndContactedServersSimulatingCrash(transactionId, CRASH_DURING_SEND_DECISION);
+    }
+
+    private void sendDecisionToClientAndContactedServersSimulatingCrash(String transactionId, CrashType crashType) {
+        Decision decision = decisions.get(transactionId);
+        Message msg = new DecisionResponse(transactionId, decision);
+
+        sendMessageToContactedServersSimulatingCrash(msg, crashType);
+
+        if (crashType == CrashType.NONE) {
+            TransactionInfo currentTransactionInfo = ongoingTransactions.get(transactionId);
+            sendMessageToClient(currentTransactionInfo.client, new Client.TxnResultMsg(decision == Decision.COMMIT));
+            ongoingTransactions.remove(msg.transactionId);
         }
     }
 
-    private void sendMessageToFirstContactedServerAndThenCrash(Message msg, int recoverIn) {
+    private void sendMessageToContactedServersSimulatingCrash(Message msg, CrashType crashType) {
         TransactionInfo currentTransactionInfo = ongoingTransactions.get(msg.transactionId);
+
         for(ActorRef server : currentTransactionInfo.contactedServers) {
             server.tell(msg, getSelf());
-            crash(recoverIn, FAULTY_COORDINATOR_ID);
-            return;
+
+            if (crashType == CrashType.AFTER_FIRST_SEND) {
+                crash(3000, FAULTY_COORDINATOR_ID);
+                return;
+            }
+        }
+
+        if (crashType == CrashType.AFTER_ALL_SENDS) {
+            crash(5000, FAULTY_COORDINATOR_ID);
         }
     }
 

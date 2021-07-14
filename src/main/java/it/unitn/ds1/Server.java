@@ -202,7 +202,7 @@ public class Server extends Node {
         if (!hasDecided(msg.transactionId)) {  // Termination protocol
             log("TIMEOUT: decision response not arrived, starting termination protocol...");
             // ask other contacted servers
-            sendMessageCorrectlyToAllContactedServers(new DecisionRequest(msg.transactionId));
+            sendMessageToContactedServersCorrectly(new DecisionRequest(msg.transactionId));
 
             // ask also the coordinator
             TransactionInfo currentTransactionInfo = ongoingTransactions.get(msg.transactionId);
@@ -230,8 +230,7 @@ public class Server extends Node {
         }
     }
 
-    // TODO: spostare nella classe Node e fare refactoring
-    private void sendMessageCorrectlyToAllContactedServers(Message msg) {
+    private void sendMessageToContactedServersCorrectly(Message msg) {
         TransactionInfo currentTransactionInfo = ongoingTransactions.get(msg.transactionId);
         for(ActorRef server : currentTransactionInfo.contactedServers) {
             server.tell(msg, getSelf());
