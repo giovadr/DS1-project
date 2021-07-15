@@ -6,6 +6,7 @@ import java.io.Serializable;
 import java.util.*;
 
 public class Coordinator extends Node {
+    private final static int READ_TIMEOUT = 8000;
     private final static int VOTE_TIMEOUT = 1000;
     private final static int FAULTY_COORDINATOR_ID = 0;
 
@@ -51,9 +52,9 @@ public class Coordinator extends Node {
         ActorRef currentClient = getSender();
         String transactionId = transactionIdForClients.get(currentClient);
         ActorRef currentServer = getServerFromKey(msg.key);
-        currentServer.tell(new ReadMsg(transactionId, msg.key), getSelf());
+        sendMessageWithDelay(currentServer, new ReadMsg(transactionId, msg.key));
         addContactedServer(transactionId, currentServer);
-        setTimeout(transactionId, VOTE_TIMEOUT);
+        setTimeout(transactionId, READ_TIMEOUT);
     }
 
     private void onReadResultMsg(ReadResultMsg msg) {
@@ -68,7 +69,7 @@ public class Coordinator extends Node {
         String transactionId = transactionIdForClients.get(currentClient);
         ActorRef currentServer = getServerFromKey(msg.key);
 
-        currentServer.tell(new WriteMsg(transactionId, msg.key, msg.value), getSelf());
+        sendMessageWithDelay(currentServer, new WriteMsg(transactionId, msg.key, msg.value));
         addContactedServer(transactionId, currentServer);
 
         log(transactionId, "Write (k:" + msg.key + ", v:" + msg.value + ")");
@@ -195,10 +196,10 @@ public class Coordinator extends Node {
         }
 
         for(ActorRef server : currentTransactionInfo.contactedServers) {
-            server.tell(msg, getSelf());
+            sendMessageWithDelay(server, msg);
 
             if (crashType == CrashType.AFTER_FIRST_SEND && id == FAULTY_COORDINATOR_ID) {
-                crash(3000);
+                crash(5000);
                 return;
             }
         }

@@ -70,7 +70,7 @@ public class Server extends Node {
         ReadResultMsg readResult = new ReadResultMsg(msg.transactionId, msg.key, localWorkspace[msg.key % 10].value);
         localWorkspace[msg.key % 10].readsCounter++;
 
-        currentCoordinator.tell(readResult, getSelf());
+        sendMessageWithDelay(currentCoordinator, readResult);
 
         log(msg.transactionId, "Send read result (k:" + readResult.key + ", v:" + readResult.value + ") to coordinator");
     }
@@ -140,7 +140,7 @@ public class Server extends Node {
             currentTransactionInfo.serverHasVoted = true;
 
             ActorRef currentCoordinator = getSender();
-            currentCoordinator.tell(new VoteResponse(msg.transactionId, vote), getSelf());
+            sendMessageWithDelay(currentCoordinator, new VoteResponse(msg.transactionId, vote));
 
             setTimeout(msg.transactionId, DECISION_TIMEOUT);
 
@@ -197,7 +197,7 @@ public class Server extends Node {
                 it.remove();
                 log(transactionId, "RECOVERING: not voted yet, aborting transaction");
             } else { // the server has voted YES
-                currentTransactionInfo.coordinator.tell(new DecisionRequest(transactionId), getSelf());
+                sendMessageWithDelay(currentTransactionInfo.coordinator, new DecisionRequest(transactionId));
                 setTimeout(transactionId, DECISION_TIMEOUT);
                 log(transactionId, "RECOVERING: voted yes, asking coordinator the decision for transaction");
             }
@@ -212,7 +212,7 @@ public class Server extends Node {
 
             // ask also the coordinator
             TransactionInfo currentTransactionInfo = ongoingTransactions.get(msg.transactionId);
-            currentTransactionInfo.coordinator.tell(new DecisionRequest(msg.transactionId), getSelf());
+            sendMessageWithDelay(currentTransactionInfo.coordinator, new DecisionRequest(msg.transactionId));
             setTimeout(msg.transactionId, DECISION_TIMEOUT);
         }
     }
@@ -238,7 +238,7 @@ public class Server extends Node {
     private void sendMessageToContactedServersCorrectly(Message msg) {
         TransactionInfo currentTransactionInfo = ongoingTransactions.get(msg.transactionId);
         for(ActorRef server : currentTransactionInfo.contactedServers) {
-            server.tell(msg, getSelf());
+            sendMessageWithDelay(server, msg);
         }
     }
 

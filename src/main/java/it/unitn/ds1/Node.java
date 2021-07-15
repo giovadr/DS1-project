@@ -103,7 +103,7 @@ public abstract class Node extends AbstractActor {
     protected abstract void onRecovery(Recovery msg);
 
     // emulate a crash and a recovery in a given time
-    void crash(int recoverIn) {
+    protected void crash(int recoverIn) {
         getContext().become(crashed());
 
         // setting a timer to "recover"
@@ -116,28 +116,38 @@ public abstract class Node extends AbstractActor {
         log("CRASH!");
     }
 
-    void log(String s) {
+    protected void log(String s) {
         log("", s);
     }
 
-    void log(String transactionId, String s) {
+    protected void log(String transactionId, String s) {
         if (!transactionId.isEmpty()) {
             transactionId = "[T#" + transactionId + "] ";
         }
         System.out.format("%s[%s] %s\n", transactionId, getActorName(self()), s);
     }
 
-    String getActorName(ActorRef actor) {
+    protected String getActorName(ActorRef actor) {
         return actor.path().name();
     }
 
+    protected void sendMessageWithDelay(ActorRef receiver, Serializable msg) {
+        Random r = new Random();
+        final int minDelay = 10;
+        final int maxDelay = 30;
+        // random delay between `minDelay` and `maxDelay` included
+        int d = r.nextInt(maxDelay - minDelay + 1) + minDelay;
+        delay(d);
+        receiver.tell(msg, getSelf());
+    }
+
     // emulate a delay of d milliseconds
-    void delay(int d) {
+    protected void delay(int d) {
         try {Thread.sleep(d);} catch (Exception ignored) {}
     }
 
     // schedule a Timeout message in specified time
-    void setTimeout(String transactionId, int time) {
+    protected void setTimeout(String transactionId, int time) {
         getContext().system().scheduler().scheduleOnce(
                 Duration.create(time, TimeUnit.MILLISECONDS),
                 getSelf(),
@@ -147,13 +157,13 @@ public abstract class Node extends AbstractActor {
     }
 
     // fix the final decision of the current node
-    void fixDecision(String transactionId, Decision d) {
+    protected void fixDecision(String transactionId, Decision d) {
         if (!hasDecided(transactionId)) {
             this.decisions.put(transactionId, d);
         }
     }
 
-    boolean hasDecided(String transactionId) {
+    protected boolean hasDecided(String transactionId) {
         return decisions.containsKey(transactionId);
     }
 
