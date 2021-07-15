@@ -122,10 +122,10 @@ public class Server extends Node {
             }
             Vote vote;
 
-            // update locks in the global workspace
             if (canCommit) {
                 vote = Vote.YES;
 
+                // update locks in the global workspace
                 for (int i = 0; i < Main.N_KEYS_PER_SERVER; i++) {
                     globalWorkspace[i].readsCounter += localWorkspace[i].readsCounter;
                     globalWorkspace[i].writesCounter += localWorkspace[i].writesCounter;
