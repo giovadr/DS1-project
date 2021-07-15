@@ -20,12 +20,12 @@ public class Server extends Node {
 
     private static class TransactionInfo {
         public final DataEntry[] localWorkspace;
-        public ActorRef coordinator;
+        public final ActorRef coordinator;
         public Set<ActorRef> contactedServers;
         public boolean serverHasVoted;
-        public TransactionInfo() {
+        public TransactionInfo(ActorRef coordinator) {
             this.localWorkspace = new DataEntry[Main.N_KEYS_PER_SERVER];
-            this.coordinator = null;
+            this.coordinator = coordinator;
             this.contactedServers = null;
             this.serverHasVoted = false;
         }
@@ -227,11 +227,10 @@ public class Server extends Node {
 
     private void ensureTransactionIsInitialized(String transactionId, ActorRef coordinator) {
         if (!ongoingTransactions.containsKey(transactionId)) {
-            TransactionInfo t = new TransactionInfo();
+            TransactionInfo t = new TransactionInfo(coordinator);
             for (int i = 0; i < Main.N_KEYS_PER_SERVER; i++) {
                 t.localWorkspace[i] = new DataEntry(globalWorkspace[i].version, globalWorkspace[i].value);
             }
-            t.coordinator = coordinator;
             ongoingTransactions.put(transactionId, t);
         }
     }
