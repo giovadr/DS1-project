@@ -13,10 +13,14 @@ public abstract class Node extends AbstractActor {
     protected List<ActorRef> servers;
     protected Map<String, Decision>  decisions =  new HashMap<>();
 
+    /*-- Actor constructor ---------------------------------------------------- */
+
     public Node(int id) {
         super();
         this.id = id;
     }
+
+    /*-- Message classes ------------------------------------------------------ */
 
     protected static class WelcomeMsg implements Serializable {
         public final List<ActorRef> servers;
@@ -94,13 +98,7 @@ public abstract class Node extends AbstractActor {
 
     protected static class Recovery implements Serializable {}
 
-    protected void onWelcomeMsg(WelcomeMsg msg) {
-        this.servers = msg.servers;
-        System.out.println(servers);
-    }
-
-    // abstract method to be implemented in extending classes
-    protected abstract void onRecovery(Recovery msg);
+    /*-- Actor methods -------------------------------------------------------- */
 
     // emulate a crash and a recovery in a given time
     protected void crash(int recoverIn) {
@@ -114,6 +112,11 @@ public abstract class Node extends AbstractActor {
                 getContext().system().dispatcher(), getSelf()
         );
         log("CRASH!");
+    }
+
+    // emulate a delay of d milliseconds
+    protected void delay(int d) {
+        try {Thread.sleep(d);} catch (Exception ignored) {}
     }
 
     protected void log(String s) {
@@ -141,11 +144,6 @@ public abstract class Node extends AbstractActor {
         receiver.tell(msg, getSelf());
     }
 
-    // emulate a delay of d milliseconds
-    protected void delay(int d) {
-        try {Thread.sleep(d);} catch (Exception ignored) {}
-    }
-
     // schedule a Timeout message in specified time
     protected void setTimeout(String transactionId, int time) {
         getContext().system().scheduler().scheduleOnce(
@@ -167,6 +165,14 @@ public abstract class Node extends AbstractActor {
         return decisions.containsKey(transactionId);
     }
 
+    /*-- Message handlers ----------------------------------------------------- */
+
+    protected void onWelcomeMsg(WelcomeMsg msg) {
+        this.servers = msg.servers;
+        System.out.println(servers);
+    }
+
+    protected abstract void onRecovery(Recovery msg);
     protected abstract Receive crashed();
 
     protected void onDecisionRequest(DecisionRequest msg) {

@@ -36,6 +36,7 @@ public class Server extends Node {
         public Integer value;
         public Integer readsCounter;
         public Integer writesCounter;
+
         public DataEntry(int version, int value) {
             this.version = version;
             this.value = value;
@@ -49,6 +50,8 @@ public class Server extends Node {
         }
     }
 
+    /*-- Actor constructor ---------------------------------------------------- */
+
     public Server(int serverId) {
         super(serverId);
         for (int i = 0; i < Main.N_KEYS_PER_SERVER; i++) {
@@ -60,7 +63,30 @@ public class Server extends Node {
         return Props.create(Server.class, () -> new Server(serverId));
     }
 
+    /*-- Message classes ------------------------------------------------------ */
+
     public static class LogRequestMsg implements Serializable {}
+
+    /*-- Actor methods -------------------------------------------------------- */
+
+    private void ensureTransactionIsInitialized(String transactionId, ActorRef coordinator) {
+        if (!ongoingTransactions.containsKey(transactionId)) {
+            TransactionInfo t = new TransactionInfo(coordinator);
+            for (int i = 0; i < Main.N_KEYS_PER_SERVER; i++) {
+                t.localWorkspace[i] = new DataEntry(globalWorkspace[i].version, globalWorkspace[i].value);
+            }
+            ongoingTransactions.put(transactionId, t);
+        }
+    }
+
+    private void sendMessageToContactedServersCorrectly(Message msg) {
+        TransactionInfo currentTransactionInfo = ongoingTransactions.get(msg.transactionId);
+        for(ActorRef server : currentTransactionInfo.contactedServers) {
+            sendMessageWithDelay(server, msg);
+        }
+    }
+
+    /*-- Message handlers ----------------------------------------------------- */
 
     private void onReadMsg(ReadMsg msg) {
         ActorRef currentCoordinator = getSender();
@@ -217,29 +243,12 @@ public class Server extends Node {
         }
     }
 
-    private void onLogRequestMsg(LogRequestMsg msg) {
+    private void onLogRequestMsg(LogRequestMsg msg){
         int sum = 0;
         for (int i = 0; i < Main.N_KEYS_PER_SERVER; i++) {
             sum += globalWorkspace[i].value;
         }
         log("FINAL SUM " + sum);
-    }
-
-    private void ensureTransactionIsInitialized(String transactionId, ActorRef coordinator) {
-        if (!ongoingTransactions.containsKey(transactionId)) {
-            TransactionInfo t = new TransactionInfo(coordinator);
-            for (int i = 0; i < Main.N_KEYS_PER_SERVER; i++) {
-                t.localWorkspace[i] = new DataEntry(globalWorkspace[i].version, globalWorkspace[i].value);
-            }
-            ongoingTransactions.put(transactionId, t);
-        }
-    }
-
-    private void sendMessageToContactedServersCorrectly(Message msg) {
-        TransactionInfo currentTransactionInfo = ongoingTransactions.get(msg.transactionId);
-        for(ActorRef server : currentTransactionInfo.contactedServers) {
-            sendMessageWithDelay(server, msg);
-        }
     }
 
     @Override
