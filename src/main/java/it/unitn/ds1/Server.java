@@ -15,16 +15,16 @@ public class Server extends Node {
     private enum CrashSituation {NONE, BEFORE_VOTING, AFTER_VOTING}
     private final static CrashSituation CRASH_SITUATION = CrashSituation.NONE;
 
-    private final DataEntry[] globalWorkspace = new DataEntry[Main.N_KEYS_PER_SERVER];
+    private final DataEntry[] publicWorkspace = new DataEntry[Main.N_KEYS_PER_SERVER];
     private final Map<String, TransactionInfo> ongoingTransactions = new HashMap<>();
 
     private static class TransactionInfo {
-        public final DataEntry[] localWorkspace;
+        public final DataEntry[] privateWorkspace;
         public final ActorRef coordinator;
         public Set<ActorRef> contactedServers;
         public boolean serverHasVoted;
         public TransactionInfo(ActorRef coordinator) {
-            this.localWorkspace = new DataEntry[Main.N_KEYS_PER_SERVER];
+            this.privateWorkspace = new DataEntry[Main.N_KEYS_PER_SERVER];
             this.coordinator = coordinator;
             this.contactedServers = null;
             this.serverHasVoted = false;
@@ -55,7 +55,7 @@ public class Server extends Node {
     public Server(int serverId) {
         super(serverId);
         for (int i = 0; i < Main.N_KEYS_PER_SERVER; i++) {
-            globalWorkspace[i] = new DataEntry(0, 100);
+            publicWorkspace[i] = new DataEntry(0, 100);
         }
     }
 
@@ -73,7 +73,7 @@ public class Server extends Node {
         if (!ongoingTransactions.containsKey(transactionId)) {
             TransactionInfo t = new TransactionInfo(coordinator);
             for (int i = 0; i < Main.N_KEYS_PER_SERVER; i++) {
-                t.localWorkspace[i] = new DataEntry(globalWorkspace[i].version, globalWorkspace[i].value);
+                t.privateWorkspace[i] = new DataEntry(publicWorkspace[i].version, publicWorkspace[i].value);
             }
             ongoingTransactions.put(transactionId, t);
         }
@@ -92,9 +92,9 @@ public class Server extends Node {
         ActorRef currentCoordinator = getSender();
         ensureTransactionIsInitialized(msg.transactionId, currentCoordinator);
 
-        DataEntry[] localWorkspace = ongoingTransactions.get(msg.transactionId).localWorkspace;
-        ReadResultMsg readResult = new ReadResultMsg(msg.transactionId, msg.key, localWorkspace[msg.key % 10].value);
-        localWorkspace[msg.key % 10].readsCounter++;
+        DataEntry[] privateWorkspace = ongoingTransactions.get(msg.transactionId).privateWorkspace;
+        ReadResultMsg readResult = new ReadResultMsg(msg.transactionId, msg.key, privateWorkspace[msg.key % 10].value);
+        privateWorkspace[msg.key % 10].readsCounter++;
 
         sendMessageWithDelay(currentCoordinator, readResult);
 
@@ -104,11 +104,11 @@ public class Server extends Node {
     private void onWriteMsg(WriteMsg msg) {
         ensureTransactionIsInitialized(msg.transactionId, getSender());
 
-        DataEntry[] localWorkspace = ongoingTransactions.get(msg.transactionId).localWorkspace;
-        localWorkspace[msg.key % 10].value = msg.value;
-        localWorkspace[msg.key % 10].writesCounter++;
+        DataEntry[] privateWorkspace = ongoingTransactions.get(msg.transactionId).privateWorkspace;
+        privateWorkspace[msg.key % 10].value = msg.value;
+        privateWorkspace[msg.key % 10].writesCounter++;
 
-        log(msg.transactionId, "Write (k:" + msg.key + ", v:" + localWorkspace[msg.key % 10].value + ")");
+        log(msg.transactionId, "Write (k:" + msg.key + ", v:" + privateWorkspace[msg.key % 10].value + ")");
     }
 
     private void onVoteRequestMsg(VoteRequest msg) {
@@ -116,7 +116,7 @@ public class Server extends Node {
             if (CRASH_SITUATION == CrashSituation.BEFORE_VOTING && id == FAULTY_SERVER_ID) { crash(5000); return; }
 
             TransactionInfo currentTransactionInfo = ongoingTransactions.get(msg.transactionId);
-            DataEntry[] localWorkspace = currentTransactionInfo.localWorkspace;
+            DataEntry[] privateWorkspace = currentTransactionInfo.privateWorkspace;
             // copying all participant refs except for self
             currentTransactionInfo.contactedServers = msg.contactedServers.stream()
                     .filter((contactedServer) -> !contactedServer.equals(getSelf()))
@@ -124,24 +124,24 @@ public class Server extends Node {
             boolean canCommit = true;
 
             for (int i = 0; i < Main.N_KEYS_PER_SERVER; i++) {
-                if (globalWorkspace[i].readsCounter < 0 || globalWorkspace[i].writesCounter < 0) throw new RuntimeException("LOCKS COUNTERS ARE NEGATIVE!");
-                log(msg.transactionId, "workspace[" + i + "] -> global = " + globalWorkspace[i] + " | local = " + localWorkspace[i]);
+                if (publicWorkspace[i].readsCounter < 0 || publicWorkspace[i].writesCounter < 0) throw new RuntimeException("LOCKS COUNTERS ARE NEGATIVE!");
+                log(msg.transactionId, "workspace[" + i + "] -> public = " + publicWorkspace[i] + " | private = " + privateWorkspace[i]);
                 // check that versions are the same, only if there were reads or writes
-                if ((localWorkspace[i].readsCounter > 0 || localWorkspace[i].writesCounter > 0) && !localWorkspace[i].version.equals(globalWorkspace[i].version)) {
+                if ((privateWorkspace[i].readsCounter > 0 || privateWorkspace[i].writesCounter > 0) && !privateWorkspace[i].version.equals(publicWorkspace[i].version)) {
                     log(msg.transactionId, "CANNOT COMMIT: versions are different");
                     canCommit = false;
                     break;
                 }
                 // if there is a write lock, we cannot read or write
-                if (globalWorkspace[i].writesCounter > 0 && (localWorkspace[i].readsCounter > 0 || localWorkspace[i].writesCounter > 0)) {
-                    log(msg.transactionId, "CANNOT COMMIT: write lock (" + globalWorkspace[i].writesCounter + "), " +
-                            "cannot read (" + localWorkspace[i].readsCounter + ") or write (" + localWorkspace[i].writesCounter + ")");
+                if (publicWorkspace[i].writesCounter > 0 && (privateWorkspace[i].readsCounter > 0 || privateWorkspace[i].writesCounter > 0)) {
+                    log(msg.transactionId, "CANNOT COMMIT: write lock (" + publicWorkspace[i].writesCounter + "), " +
+                            "cannot read (" + privateWorkspace[i].readsCounter + ") or write (" + privateWorkspace[i].writesCounter + ")");
                     canCommit = false;
                     break;
                 }
                 // if there is a read lock, we cannot write
-                if (globalWorkspace[i].readsCounter > 0 && localWorkspace[i].writesCounter > 0) {
-                    log(msg.transactionId, "CANNOT COMMIT: read lock (" + globalWorkspace[i].readsCounter + "), cannot write (" + localWorkspace[i].writesCounter + ")");
+                if (publicWorkspace[i].readsCounter > 0 && privateWorkspace[i].writesCounter > 0) {
+                    log(msg.transactionId, "CANNOT COMMIT: read lock (" + publicWorkspace[i].readsCounter + "), cannot write (" + privateWorkspace[i].writesCounter + ")");
                     canCommit = false;
                     break;
                 }
@@ -151,10 +151,10 @@ public class Server extends Node {
             if (canCommit) {
                 vote = Vote.YES;
 
-                // update locks in the global workspace
+                // update locks in the public workspace
                 for (int i = 0; i < Main.N_KEYS_PER_SERVER; i++) {
-                    globalWorkspace[i].readsCounter += localWorkspace[i].readsCounter;
-                    globalWorkspace[i].writesCounter += localWorkspace[i].writesCounter;
+                    publicWorkspace[i].readsCounter += privateWorkspace[i].readsCounter;
+                    publicWorkspace[i].writesCounter += privateWorkspace[i].writesCounter;
                 }
             } else {
                 vote = Vote.NO;
@@ -179,25 +179,25 @@ public class Server extends Node {
     private void onDecisionResponseMsg(DecisionResponse msg) {
         if (ongoingTransactions.containsKey(msg.transactionId)) {
             TransactionInfo currentTransactionInfo = ongoingTransactions.get(msg.transactionId);
-            DataEntry[] localWorkspace = currentTransactionInfo.localWorkspace;
+            DataEntry[] privateWorkspace = currentTransactionInfo.privateWorkspace;
 
             fixDecision(msg.transactionId, msg.decision);
 
             if (msg.decision == Decision.COMMIT) {
                 // update values that were written
                 for (int i = 0; i < Main.N_KEYS_PER_SERVER; i++) {
-                    if (localWorkspace[i].writesCounter > 0) {
-                        globalWorkspace[i].version++;
-                        globalWorkspace[i].value = localWorkspace[i].value;
+                    if (privateWorkspace[i].writesCounter > 0) {
+                        publicWorkspace[i].version++;
+                        publicWorkspace[i].value = privateWorkspace[i].value;
                     }
                 }
             }
 
             if (currentTransactionInfo.serverHasVoted) {
-                //remove locks in the global workspace
+                //remove locks in the public workspace
                 for (int i = 0; i < Main.N_KEYS_PER_SERVER; i++) {
-                    globalWorkspace[i].readsCounter -= localWorkspace[i].readsCounter;
-                    globalWorkspace[i].writesCounter -= localWorkspace[i].writesCounter;
+                    publicWorkspace[i].readsCounter -= privateWorkspace[i].readsCounter;
+                    publicWorkspace[i].writesCounter -= privateWorkspace[i].writesCounter;
                 }
             }
 
@@ -246,7 +246,7 @@ public class Server extends Node {
     private void onLogRequestMsg(LogRequestMsg msg){
         int sum = 0;
         for (int i = 0; i < Main.N_KEYS_PER_SERVER; i++) {
-            sum += globalWorkspace[i].value;
+            sum += publicWorkspace[i].value;
         }
         log("FINAL SUM " + sum);
     }
