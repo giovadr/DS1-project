@@ -8,7 +8,7 @@ import java.util.*;
 public class Coordinator extends Node {
     private final static int READ_TIMEOUT = 8000;
     private final static int VOTE_TIMEOUT = 1000;
-    private final static int FAULTY_COORDINATOR_ID = 0;
+    private final static int N_FAULTY_COORDINATORS = 1;
 
     private enum CrashType {NONE, BEFORE_ANY_SEND, AFTER_FIRST_SEND, AFTER_ALL_SENDS}
     private final static CrashType CRASH_DURING_VOTE_REQUEST = CrashType.NONE;
@@ -97,7 +97,7 @@ public class Coordinator extends Node {
     private void sendMessageToContactedServersSimulatingCrash(Message msg, CrashType crashType) {
         TransactionInfo currentTransactionInfo = ongoingTransactions.get(msg.transactionId);
 
-        if (crashType == CrashType.BEFORE_ANY_SEND && id == FAULTY_COORDINATOR_ID) {
+        if (crashType == CrashType.BEFORE_ANY_SEND && id < N_FAULTY_COORDINATORS) {
             crash(5000);
             return;
         }
@@ -105,13 +105,13 @@ public class Coordinator extends Node {
         for(ActorRef server : currentTransactionInfo.contactedServers) {
             sendMessageWithDelay(server, msg);
 
-            if (crashType == CrashType.AFTER_FIRST_SEND && id == FAULTY_COORDINATOR_ID) {
+            if (crashType == CrashType.AFTER_FIRST_SEND && id < N_FAULTY_COORDINATORS) {
                 crash(5000);
                 return;
             }
         }
 
-        if (crashType == CrashType.AFTER_ALL_SENDS && id == FAULTY_COORDINATOR_ID) {
+        if (crashType == CrashType.AFTER_ALL_SENDS && id < N_FAULTY_COORDINATORS) {
             crash(5000);
         }
     }

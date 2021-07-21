@@ -10,7 +10,7 @@ import java.util.stream.Collectors;
 
 public class Server extends Node {
     private final static int DECISION_TIMEOUT = 2000;  // timeout for the decision, ms
-    private final static int FAULTY_SERVER_ID = 0;
+    private final static int N_FAULTY_SERVERS = 1;
 
     private enum CrashSituation {NONE, BEFORE_VOTING, AFTER_VOTING}
     private final static CrashSituation CRASH_SITUATION = CrashSituation.NONE;
@@ -113,7 +113,7 @@ public class Server extends Node {
 
     private void onVoteRequestMsg(VoteRequest msg) {
         if (ongoingTransactions.containsKey(msg.transactionId)) {
-            if (CRASH_SITUATION == CrashSituation.BEFORE_VOTING && id == FAULTY_SERVER_ID) { crash(5000); return; }
+            if (CRASH_SITUATION == CrashSituation.BEFORE_VOTING && id < N_FAULTY_SERVERS) { crash(5000); return; }
 
             TransactionInfo currentTransactionInfo = ongoingTransactions.get(msg.transactionId);
             DataEntry[] privateWorkspace = currentTransactionInfo.privateWorkspace;
@@ -172,7 +172,7 @@ public class Server extends Node {
 
             log(msg.transactionId, "Can commit? " + canCommit + " -> Vote " + vote);
 
-            if (CRASH_SITUATION == CrashSituation.AFTER_VOTING && id == FAULTY_SERVER_ID) { crash(5000); return; }
+            if (CRASH_SITUATION == CrashSituation.AFTER_VOTING && id < N_FAULTY_SERVERS) { crash(5000); return; }
         }
     }
 
